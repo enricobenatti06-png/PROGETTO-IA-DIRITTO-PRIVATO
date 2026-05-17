@@ -101,6 +101,7 @@ def parse_hierarchy(path: Path, base: Path) -> dict:
 def download_from_hf() -> None:
     """Scarica i file dal dataset Hugging Face se non già presenti."""
     from huggingface_hub import snapshot_download
+    hf_token = st.secrets.get("HF_TOKEN", None)
     if not DOCS_DIR.exists() or not any(DOCS_DIR.rglob("*.txt")):
         st.info("⬇️ Download documenti da Hugging Face… (solo al primo avvio)")
         snapshot_download(
@@ -108,6 +109,7 @@ def download_from_hf() -> None:
             repo_type="dataset",
             local_dir=str(DOCS_DIR),
             ignore_patterns=["*.json", "*.md", ".gitattributes"],
+            token=hf_token,
         )
 
 
