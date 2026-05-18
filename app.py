@@ -351,6 +351,47 @@ QUIZ:""",
 
 
 # ---------------------------------------------------------------------------
+# Storico — salvataggio e lettura
+# ---------------------------------------------------------------------------
+import json as _json
+from datetime import datetime
+
+def save_log(query: str, mode: str, output: str) -> None:
+    """Salva domanda e risposta nello storico persistente."""
+    try:
+        try:
+            existing = _json.loads(st.session_state.get("_log_cache", "[]"))
+        except Exception:
+            existing = []
+        entry = {
+            "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "modalita":  mode,
+            "domanda":   query,
+            "risposta":  output,
+        }
+        existing.append(entry)
+        # Mantieni ultimi 200 log
+        existing = existing[-200:]
+        st.session_state["_log_cache"] = _json.dumps(existing)
+        # Salva su file locale (persiste su Streamlit Cloud tra riavvii)
+        log_path = Path("/tmp/storico.json")
+        log_path.write_text(_json.dumps(existing, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+
+
+def load_log() -> list:
+    """Carica lo storico dal file."""
+    log_path = Path("/tmp/storico.json")
+    if log_path.exists():
+        try:
+            return _json.loads(log_path.read_text())
+        except Exception:
+            return []
+    return []
+
+
+# ---------------------------------------------------------------------------
 # App Streamlit
 # ---------------------------------------------------------------------------
 chunks, bm25 = load_index()
@@ -359,43 +400,83 @@ st.set_page_config(page_title="IA Diritto Privato – Galgano", layout="wide")
 st.title("📖 IA Diritto Privato – Manuale Galgano")
 st.caption(f"Corpus: {len(chunks)} documenti indicizzati")
 
-# Sidebar
-mode = st.sidebar.selectbox("Modalità", ["Chat", "Schema", "Flashcard", "Quiz"])
+# Sidebar — navigazione pagine
+pagina = st.sidebar.radio("📌 Navigazione", ["🎓 Assistente", "📋 Storico"])
 
-with st.sidebar.expander("⚙️ Retrieval"):
-    max_results  = st.slider("Chunk recuperati", 2, 10, MAX_RESULTS)
-    show_sources = st.checkbox("Mostra fonti con anteprima", value=True)
-    show_scores  = st.checkbox("Mostra punteggi BM25", value=False)
+# ---------------------------------------------------------------------------
+# PAGINA: STORICO
+# ---------------------------------------------------------------------------
+if pagina == "📋 Storico":
+    st.header("📋 Storico domande e risposte")
 
-# Input
-query = st.text_input("Inserisci argomento o domanda", placeholder="es. responsabilità extracontrattuale, usucapione, nullità del contratto…")
+    password = st.text_input("Password di accesso", type="password")
+    PASSWORD_CORRETTA = st.secrets.get("STORICO_PASSWORD", "galgano2024")
 
-if st.button("Genera", type="primary") and query:
-    with st.spinner("Ricerca nel corpus…"):
-        results = retrieve(query, chunks, bm25, max_results=max_results)
-
-    if not results:
-        st.warning("⚠️ Nessun documento rilevante trovato. Prova con termini più specifici o sinonimi.")
+    if password != PASSWORD_CORRETTA:
+        st.warning("Inserisci la password per accedere allo storico.")
         st.stop()
 
-    context = build_context(results)
-    prompt  = PROMPTS[mode].format(context=context, query=query)
+    logs = load_log()
+    if not logs:
+        st.info("Nessuna domanda registrata ancora.")
+        st.stop()
 
-    with st.spinner(f"Generazione [{mode}]…"):
-        output = ask_ollama(prompt)
+    st.success(f"✅ {len(logs)} domande registrate")
 
-    st.subheader(f"Modalità: {mode}")
-    st.write(output)
+    # Filtro per modalità
+    modalita_filter = st.selectbox("Filtra per modalità", ["Tutte", "Chat", "Schema", "Flashcard", "Quiz"])
 
-    # Fonti
-    if show_sources:
-        with st.expander(f"📄 Fonti utilizzate ({len(results)} chunk)"):
-            for score, chunk in results:
-                meta      = chunk["meta"]
-                breadcrumb = " > ".join(meta["folders"] + [meta["filename"]])
-                header = f"**{breadcrumb}**"
-                if show_scores:
-                    header += f"  `score: {score:.3f}`"
-                st.markdown(header)
-                st.caption(chunk["content"][:400] + ("…" if len(chunk["content"]) > 400 else ""))
-                st.divider()
+    for entry in reversed(logs):
+        if modalita_filter != "Tutte" and entry["modalita"] != modalita_filter:
+            continue
+        with st.expander(f"[{entry['timestamp']}] **{entry['modalita']}** — {entry['domanda'][:80]}…"):
+            st.markdown(f"**🕐 Data/ora:** {entry['timestamp']}")
+            st.markdown(f"**📌 Modalità:** {entry['modalita']}")
+            st.markdown(f"**❓ Domanda:** {entry['domanda']}")
+            st.markdown("**💬 Risposta:**")
+            st.write(entry["risposta"])
+
+# ---------------------------------------------------------------------------
+# PAGINA: ASSISTENTE
+# ---------------------------------------------------------------------------
+else:
+    mode = st.sidebar.selectbox("Modalità", ["Chat", "Schema", "Flashcard", "Quiz"])
+
+    with st.sidebar.expander("⚙️ Retrieval"):
+        max_results  = st.slider("Chunk recuperati", 2, 10, MAX_RESULTS)
+        show_sources = st.checkbox("Mostra fonti con anteprima", value=True)
+        show_scores  = st.checkbox("Mostra punteggi BM25", value=False)
+
+    query = st.text_input("Inserisci argomento o domanda", placeholder="es. responsabilità extracontrattuale, usucapione, nullità del contratto…")
+
+    if st.button("Genera", type="primary") and query:
+        with st.spinner("Ricerca nel corpus…"):
+            results = retrieve(query, chunks, bm25, max_results=max_results)
+
+        if not results:
+            st.warning("⚠️ Nessun documento rilevante trovato. Prova con termini più specifici o sinonimi.")
+            st.stop()
+
+        context = build_context(results)
+        prompt  = PROMPTS[mode].format(context=context, query=query)
+
+        with st.spinner(f"Generazione [{mode}]…"):
+            output = ask_ollama(prompt)
+
+        # Salva nello storico
+        save_log(query, mode, output)
+
+        st.subheader(f"Modalità: {mode}")
+        st.write(output)
+
+        if show_sources:
+            with st.expander(f"📄 Fonti utilizzate ({len(results)} documenti)"):
+                for score, chunk in results:
+                    meta       = chunk["meta"]
+                    breadcrumb = " > ".join(meta["folders"] + [meta["filename"]])
+                    header     = f"**{breadcrumb}**"
+                    if show_scores:
+                        header += f"  `score: {score:.3f}`"
+                    st.markdown(header)
+                    st.caption(chunk["content"][:400] + ("…" if len(chunk["content"]) > 400 else ""))
+                    st.divider()
