@@ -36,7 +36,7 @@ HASH_FILE    = Path("/tmp/.rag_hash.txt")
 
 MAX_RESULTS  = 4
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]          # chiave da Streamlit Secrets
-GROQ_MODEL   = "llama-3.3-70b-versatile"
+GROQ_MODEL   = "openai/gpt-oss-120b"
 
 # Pesi boosting per livello gerarchico (più è profondo, più è specifico)
 LEVEL_BOOST = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0}   # livello 0 = root
