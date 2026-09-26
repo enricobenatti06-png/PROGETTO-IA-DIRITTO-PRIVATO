@@ -351,44 +351,132 @@ QUIZ:""",
 
 
 # ---------------------------------------------------------------------------
-# Storico — salvataggio e lettura
+# Storico — salvataggio e lettura (completo: domanda, risposta, fonti, modalità, timestamp)
 # ---------------------------------------------------------------------------
 import json as _json
 from datetime import datetime
 
-def save_log(query: str, mode: str, output: str) -> None:
-    """Salva domanda e risposta nello storico persistente."""
+LOG_PATH = Path("/tmp/storico.json")
+
+BADGE_COLORS = {
+    "Chat":      "#4F8EF7",
+    "Schema":    "#9B59B6",
+    "Flashcard": "#27AE60",
+    "Quiz":      "#E67E22",
+}
+
+def save_log(query: str, mode: str, output: str, fonti: list[dict]) -> None:
     try:
-        try:
-            existing = _json.loads(st.session_state.get("_log_cache", "[]"))
-        except Exception:
-            existing = []
+        existing = load_log()
         entry = {
             "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M"),
             "modalita":  mode,
             "domanda":   query,
             "risposta":  output,
+            "fonti": [
+                {
+                    "breadcrumb": " > ".join(d["meta"]["folders"] + [d["meta"]["filename"]]),
+                    "anteprima":  d["content"][:300],
+                }
+                for _, d in fonti
+            ],
         }
         existing.append(entry)
-        # Mantieni ultimi 200 log
-        existing = existing[-200:]
-        st.session_state["_log_cache"] = _json.dumps(existing)
-        # Salva su file locale (persiste su Streamlit Cloud tra riavvii)
-        log_path = Path("/tmp/storico.json")
-        log_path.write_text(_json.dumps(existing, ensure_ascii=False, indent=2))
+        existing = existing[-300:]
+        LOG_PATH.write_text(_json.dumps(existing, ensure_ascii=False, indent=2))
+        st.session_state["_log_cache"] = existing
     except Exception:
         pass
 
 
 def load_log() -> list:
-    """Carica lo storico dal file."""
-    log_path = Path("/tmp/storico.json")
-    if log_path.exists():
+    if "._log_cache" in st.session_state:
+        return st.session_state["_log_cache"]
+    if LOG_PATH.exists():
         try:
-            return _json.loads(log_path.read_text())
+            data = _json.loads(LOG_PATH.read_text())
+            st.session_state["_log_cache"] = data
+            return data
         except Exception:
-            return []
+            pass
     return []
+
+
+# ---------------------------------------------------------------------------
+# CSS personalizzato — UI moderna e pulita
+# ---------------------------------------------------------------------------
+CUSTOM_CSS = """
+<style>
+/* Font e sfondo */
+html, body, [class*="css"] { font-family: 'Inter', 'Segoe UI', sans-serif; }
+
+/* Header principale */
+.main-header {
+    padding: 1.5rem 0 0.5rem 0;
+    border-bottom: 1px solid #e5e7eb;
+    margin-bottom: 1.5rem;
+}
+.main-header h1 { font-size: 1.6rem; font-weight: 700; margin: 0; }
+.main-header p  { font-size: 0.85rem; color: #6b7280; margin: 0.2rem 0 0 0; }
+
+/* Card risposta */
+.answer-card {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+    margin-top: 1rem;
+}
+.answer-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+/* Badge modalità */
+.badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 99px;
+    color: white;
+    letter-spacing: 0.03em;
+}
+
+/* Fonte pill */
+.fonte-pill {
+    display: inline-block;
+    font-size: 0.75rem;
+    background: #eef2ff;
+    color: #4338ca;
+    border-radius: 6px;
+    padding: 3px 8px;
+    margin: 2px 3px 2px 0;
+}
+
+/* Storico card */
+.log-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 0.75rem;
+    background: white;
+}
+.log-card-meta {
+    font-size: 0.78rem;
+    color: #6b7280;
+    margin-bottom: 0.4rem;
+}
+.log-card-q {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: #111827;
+    margin-bottom: 0.5rem;
+}
+</style>
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -396,20 +484,31 @@ def load_log() -> list:
 # ---------------------------------------------------------------------------
 chunks, bm25 = load_index()
 
-st.set_page_config(page_title="IA Diritto Privato – Galgano", layout="wide")
-st.title("📖 IA Diritto Privato – Manuale Galgano")
-st.caption(f"Corpus: {len(chunks)} documenti indicizzati")
+st.set_page_config(
+    page_title="IA Studio – Diritto Privato",
+    page_icon="⚖️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-# Sidebar — navigazione pagine
-pagina = st.sidebar.radio("📌 Navigazione", ["🎓 Assistente", "📋 Storico"])
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+# Sidebar
+with st.sidebar:
+    st.markdown("### ⚖️ IA Studio")
+    st.markdown("*Manuale Galgano — Diritto Privato*")
+    st.divider()
+    pagina = st.radio("Navigazione", ["🎓 Assistente", "📋 Storico"], label_visibility="collapsed")
+    st.divider()
+    st.caption(f"📚 {len(chunks)} documenti indicizzati")
 
 # ---------------------------------------------------------------------------
 # PAGINA: STORICO
 # ---------------------------------------------------------------------------
 if pagina == "📋 Storico":
-    st.header("📋 Storico domande e risposte")
+    st.markdown('<div class="main-header"><h1>📋 Storico sessioni</h1><p>Tutte le domande e risposte salvate</p></div>', unsafe_allow_html=True)
 
-    password = st.text_input("Password di accesso", type="password")
+    password = st.text_input("Password di accesso", type="password", placeholder="Inserisci la password…")
     PASSWORD_CORRETTA = st.secrets.get("STORICO_PASSWORD", "galgano2024")
 
     if password != PASSWORD_CORRETTA:
@@ -418,38 +517,73 @@ if pagina == "📋 Storico":
 
     logs = load_log()
     if not logs:
-        st.info("Nessuna domanda registrata ancora.")
+        st.info("Nessuna sessione registrata ancora.")
         st.stop()
 
-    st.success(f"✅ {len(logs)} domande registrate")
+    # Barra in alto: contatore + filtri + export
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        st.markdown(f"**{len(logs)} sessioni registrate**")
+    with col2:
+        modalita_filter = st.selectbox("Filtra per modalità", ["Tutte", "Chat", "Schema", "Flashcard", "Quiz"], label_visibility="collapsed")
+    with col3:
+        st.download_button(
+            "⬇️ Esporta JSON",
+            data=_json.dumps(logs, ensure_ascii=False, indent=2),
+            file_name="storico_diritto_privato.json",
+            mime="application/json",
+        )
 
-    # Filtro per modalità
-    modalita_filter = st.selectbox("Filtra per modalità", ["Tutte", "Chat", "Schema", "Flashcard", "Quiz"])
+    st.divider()
 
-    for entry in reversed(logs):
-        if modalita_filter != "Tutte" and entry["modalita"] != modalita_filter:
-            continue
-        with st.expander(f"[{entry['timestamp']}] **{entry['modalita']}** — {entry['domanda'][:80]}…"):
-            st.markdown(f"**🕐 Data/ora:** {entry['timestamp']}")
-            st.markdown(f"**📌 Modalità:** {entry['modalita']}")
-            st.markdown(f"**❓ Domanda:** {entry['domanda']}")
-            st.markdown("**💬 Risposta:**")
+    filtered = [e for e in reversed(logs) if modalita_filter == "Tutte" or e["modalita"] == modalita_filter]
+
+    for entry in filtered:
+        color = BADGE_COLORS.get(entry["modalita"], "#6b7280")
+        badge = f'<span class="badge" style="background:{color}">{entry["modalita"]}</span>'
+        fonti_pills = "".join(
+            f'<span class="fonte-pill">{f["breadcrumb"]}</span>'
+            for f in entry.get("fonti", [])
+        )
+        with st.expander(f"{entry['timestamp']}  —  {entry['domanda'][:70]}{'…' if len(entry['domanda'])>70 else ''}"):
+            st.markdown(
+                f'<div class="log-card-meta">{badge} &nbsp; 🕐 {entry["timestamp"]}</div>'
+                f'<div class="log-card-q">❓ {entry["domanda"]}</div>',
+                unsafe_allow_html=True
+            )
+            if fonti_pills:
+                st.markdown(f"**Fonti:** {fonti_pills}", unsafe_allow_html=True)
+            st.markdown("---")
             st.write(entry["risposta"])
 
 # ---------------------------------------------------------------------------
 # PAGINA: ASSISTENTE
 # ---------------------------------------------------------------------------
 else:
-    mode = st.sidebar.selectbox("Modalità", ["Chat", "Schema", "Flashcard", "Quiz"])
+    st.markdown('<div class="main-header"><h1>⚖️ IA Studio – Diritto Privato</h1><p>Assistente basato sul Manuale Galgano</p></div>', unsafe_allow_html=True)
 
-    with st.sidebar.expander("⚙️ Retrieval"):
-        max_results  = st.slider("Chunk recuperati", 2, 10, MAX_RESULTS)
-        show_sources = st.checkbox("Mostra fonti con anteprima", value=True)
-        show_scores  = st.checkbox("Mostra punteggi BM25", value=False)
+    # Controlli sidebar
+    with st.sidebar:
+        mode = st.selectbox("📌 Modalità", ["Chat", "Schema", "Flashcard", "Quiz"])
+        with st.expander("⚙️ Impostazioni retrieval"):
+            max_results  = st.slider("Documenti recuperati", 2, 10, MAX_RESULTS)
+            show_sources = st.checkbox("Mostra fonti", value=True)
+            show_scores  = st.checkbox("Mostra punteggi BM25", value=False)
 
-    query = st.text_input("Inserisci argomento o domanda", placeholder="es. responsabilità extracontrattuale, usucapione, nullità del contratto…")
+    # Input query
+    query = st.text_input(
+        "Inserisci argomento o domanda",
+        placeholder="es. responsabilità extracontrattuale, usucapione, nullità del contratto…",
+        label_visibility="collapsed",
+    )
 
-    if st.button("Genera", type="primary") and query:
+    col_btn, col_tip = st.columns([1, 5])
+    with col_btn:
+        genera = st.button("Genera →", type="primary", use_container_width=True)
+    with col_tip:
+        st.caption("Prova: *nullità del contratto*, *successione testamentaria*, *possesso e usucapione*")
+
+    if genera and query:
         with st.spinner("Ricerca nel corpus…"):
             results = retrieve(query, chunks, bm25, max_results=max_results)
 
@@ -460,15 +594,24 @@ else:
         context = build_context(results)
         prompt  = PROMPTS[mode].format(context=context, query=query)
 
-        with st.spinner(f"Generazione [{mode}]…"):
+        with st.spinner("Generazione risposta…"):
             output = ask_ollama(prompt)
 
-        # Salva nello storico
-        save_log(query, mode, output)
+        # Salva nello storico (con fonti)
+        save_log(query, mode, output, results)
 
-        st.subheader(f"Modalità: {mode}")
+        # Mostra risposta in card
+        color = BADGE_COLORS.get(mode, "#6b7280")
+        badge = f'<span class="badge" style="background:{color}">{mode}</span>'
+        st.markdown(
+            f'<div class="answer-card">'
+            f'<div class="answer-card-header">{badge} <span style="font-size:0.85rem;color:#6b7280">Risposta generata</span></div>',
+            unsafe_allow_html=True
+        )
         st.write(output)
+        st.markdown('</div>', unsafe_allow_html=True)
 
+        # Fonti
         if show_sources:
             with st.expander(f"📄 Fonti utilizzate ({len(results)} documenti)"):
                 for score, chunk in results:
