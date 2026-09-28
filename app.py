@@ -1,6 +1,8 @@
 """
-RAG – Manuale Galgano  (app.py)
-Struttura attesa:
+IA DIRITTO PRIVATO – Manuale Galgano
+Interfaccia Streamlit + RAG BM25
+
+Struttura:
     app.py
     fonti/
     └── manuale_galgano/
@@ -12,7 +14,7 @@ Struttura attesa:
         └── ...
 
 Dipendenze:
-    pip install streamlit ollama
+    pip install streamlit groq huggingface_hub
 """
 
 import os
@@ -20,463 +22,1405 @@ import re
 import math
 import pickle
 import hashlib
+import json
 from pathlib import Path
 from collections import defaultdict, Counter
+from datetime import datetime
 
 import streamlit as st
 from groq import Groq
 
-# ---------------------------------------------------------------------------
-# Configurazione
-# ---------------------------------------------------------------------------
-HF_REPO      = "enricobenatti06/manuale_galgano"   # dataset Hugging Face
-DOCS_DIR     = Path("/tmp/manuale_galgano")         # cartella locale temporanea
-INDEX_FILE   = Path("/tmp/.rag_index.pkl")
-HASH_FILE    = Path("/tmp/.rag_hash.txt")
 
-MAX_RESULTS  = 4
-GROQ_API_KEY = st.secrets["GROQ_API_KEY"]          # chiave da Streamlit Secrets
-GROQ_MODEL   = "openai/gpt-oss-120b"
+# ============================================================================
+# CONFIGURAZIONE
+# ============================================================================
 
-# Pesi boosting per livello gerarchico (più è profondo, più è specifico)
-LEVEL_BOOST = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0}   # livello 0 = root
+HF_REPO = "enricobenatti06/manuale_galgano"
 
-# Sinonimi giuridici per query expansion
+DOCS_DIR = Path("/tmp/manuale_galgano")
+INDEX_FILE = Path("/tmp/.rag_index.pkl")
+HASH_FILE = Path("/tmp/.rag_hash.txt")
+CONVERSATIONS_FILE = Path("/tmp/conversazioni.json")
+
+MAX_RESULTS = 4
+
+GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+GROQ_MODEL = "openai/gpt-oss-120b"
+
+LEVEL_BOOST = {
+    0: 0.5,
+    1: 1.0,
+    2: 1.5,
+    3: 2.0,
+}
+
+
+# ============================================================================
+# SINONIMI GIURIDICI
+# ============================================================================
+
 LEGAL_SYNONYMS: dict[str, list[str]] = {
-    "contratto":       ["accordo", "negozio", "patto", "convenzione"],
-    "proprietà":       ["dominio", "diritto reale", "titolarità"],
-    "responsabilità":  ["illecito", "danno", "risarcimento", "colpa", "dolo"],
-    "successione":     ["eredità", "testamento", "eredi", "legato", "mortis causa"],
-    "obbligazione":    ["debito", "credito", "prestazione", "adempimento", "inadempimento"],
-    "nullità":         ["invalidità", "inefficacia", "annullabilità", "vizio"],
-    "risarcimento":    ["indennizzo", "ristoro", "riparazione"],
-    "possesso":        ["detenzione", "animus", "corpus", "possessore"],
-    "usucapione":      ["prescrizione acquisitiva", "acquisto originario"],
-    "locazione":       ["affitto", "conduttore", "locatore", "canone"],
-    "persona":         ["soggetto", "capacità", "personalità giuridica"],
-    "famiglia":        ["matrimonio", "coniuge", "filiazione", "parentela"],
-    "trust":           ["fiducia", "gestione patrimoniale"],
-    "garanzia":        ["pegno", "ipoteca", "fideiussione", "cauzione"],
-    "rappresentanza":  ["mandato", "procura", "agente", "preponente"],
+
+    "contratto": [
+        "accordo",
+        "negozio",
+        "patto",
+        "convenzione",
+    ],
+
+    "proprietà": [
+        "dominio",
+        "diritto reale",
+        "titolarità",
+    ],
+
+    "responsabilità": [
+        "illecito",
+        "danno",
+        "risarcimento",
+        "colpa",
+        "dolo",
+    ],
+
+    "successione": [
+        "eredità",
+        "testamento",
+        "eredi",
+        "legato",
+        "mortis causa",
+    ],
+
+    "obbligazione": [
+        "debito",
+        "credito",
+        "prestazione",
+        "adempimento",
+        "inadempimento",
+    ],
+
+    "nullità": [
+        "invalidità",
+        "inefficacia",
+        "annullabilità",
+        "vizio",
+    ],
+
+    "risarcimento": [
+        "indennizzo",
+        "ristoro",
+        "riparazione",
+    ],
+
+    "possesso": [
+        "detenzione",
+        "animus",
+        "corpus",
+        "possessore",
+    ],
+
+    "usucapione": [
+        "prescrizione acquisitiva",
+        "acquisto originario",
+    ],
+
+    "locazione": [
+        "affitto",
+        "conduttore",
+        "locatore",
+        "canone",
+    ],
+
+    "persona": [
+        "soggetto",
+        "capacità",
+        "personalità giuridica",
+    ],
+
+    "famiglia": [
+        "matrimonio",
+        "coniuge",
+        "filiazione",
+        "parentela",
+    ],
+
+    "trust": [
+        "fiducia",
+        "gestione patrimoniale",
+    ],
+
+    "garanzia": [
+        "pegno",
+        "ipoteca",
+        "fideiussione",
+        "cauzione",
+    ],
+
+    "rappresentanza": [
+        "mandato",
+        "procura",
+        "agente",
+        "preponente",
+    ],
 }
 
 
-# ---------------------------------------------------------------------------
-# Tokenizzazione
-# ---------------------------------------------------------------------------
+# ============================================================================
+# TOKENIZZAZIONE
+# ============================================================================
+
 STOPWORDS = {
-    "il","lo","la","i","gli","le","un","uno","una","di","a","da","in","con",
-    "su","per","tra","fra","e","o","ma","che","non","si","del","della","dei",
-    "degli","delle","al","alla","ai","agli","alle","dal","dalla","dai","dagli",
-    "dalle","nel","nella","nei","negli","nelle","sul","sulla","sui","sugli",
-    "sulle","col","come","anche","già","più","questo","questa","questi","queste",
-    "quello","quella","quelli","quelle","sono","essere","avere","fare","può",
-    "deve","hanno","aveva","sarà","suo","sua","suoi","sue","loro","tutto","tutti",
+    "il", "lo", "la", "i", "gli", "le",
+    "un", "uno", "una",
+    "di", "a", "da", "in", "con", "su",
+    "per", "tra", "fra",
+    "e", "o", "ma", "che", "non",
+    "si", "del", "della", "dei", "degli", "delle",
+    "al", "alla", "ai", "agli", "alle",
+    "dal", "dalla", "dai", "dagli", "dalle",
+    "nel", "nella", "nei", "negli", "nelle",
+    "sul", "sulla", "sui", "sugli", "sulle",
+    "col", "come", "anche", "già", "più",
+    "questo", "questa", "questi", "queste",
+    "quello", "quella", "quelli", "quelle",
+    "sono", "essere", "avere", "fare",
+    "può", "deve", "hanno", "aveva",
+    "sarà", "suo", "sua", "suoi", "sue",
+    "loro", "tutto", "tutti",
 }
+
 
 def tokenize(text: str) -> list[str]:
-    tokens = re.findall(r"\b[a-zàèéìòùA-ZÀÈÉÌÒÙ]{3,}\b", text.lower())
-    return [t for t in tokens if t not in STOPWORDS]
+    tokens = re.findall(
+        r"\b[a-zàèéìòùA-ZÀÈÉÌÒÙ]{3,}\b",
+        text.lower()
+    )
+
+    return [
+        token
+        for token in tokens
+        if token not in STOPWORDS
+    ]
 
 
-# ---------------------------------------------------------------------------
-# Chunking
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Caricamento documenti — un file = un documento (i file sono già chunk)
-# ---------------------------------------------------------------------------
+# ============================================================================
+# GERARCHIA DEI DOCUMENTI
+# ============================================================================
+
 def parse_hierarchy(path: Path, base: Path) -> dict:
-    rel      = path.relative_to(base)
-    parts    = list(rel.parts)          # es. [cap, sez, sottosez, argomento, file.txt]
-    folders  = parts[:-1]               # tutto tranne il file
+
+    rel = path.relative_to(base)
+
+    parts = list(rel.parts)
+
+    folders = parts[:-1]
+
     filename = parts[-1].replace(".txt", "")
+
     return {
-        "folders":      folders,        # lista completa delle cartelle, qualsiasi profondità
-        "filename":     filename,
-        "depth":        len(folders),
-        "topic_tokens": tokenize(" ".join(parts)),  # tutti i livelli come token per il boosting
+        "folders": folders,
+        "filename": filename,
+        "depth": len(folders),
+        "topic_tokens": tokenize(" ".join(parts)),
     }
 
 
+# ============================================================================
+# DOWNLOAD HUGGING FACE
+# ============================================================================
+
 def download_from_hf() -> None:
-    """Scarica i file dal dataset Hugging Face se non già presenti."""
+
     from huggingface_hub import snapshot_download
+
     hf_token = st.secrets.get("HF_TOKEN", None)
-    if not DOCS_DIR.exists() or not any(DOCS_DIR.rglob("*.txt")):
-        st.info("⬇️ Download documenti da Hugging Face… (solo al primo avvio)")
+
+    if (
+        not DOCS_DIR.exists()
+        or not any(DOCS_DIR.rglob("*.txt"))
+    ):
+
+        st.info(
+            "⬇️ Download del Manuale Galgano "
+            "(solo al primo avvio)..."
+        )
+
         snapshot_download(
             repo_id=HF_REPO,
             repo_type="dataset",
             local_dir=str(DOCS_DIR),
-            ignore_patterns=["*.json", "*.md", ".gitattributes"],
+            ignore_patterns=[
+                "*.json",
+                "*.md",
+                ".gitattributes",
+            ],
             token=hf_token,
         )
 
 
+# ============================================================================
+# CARICAMENTO DOCUMENTI
+# ============================================================================
+
 def load_all_chunks(base_dir: Path) -> list[dict]:
+
     docs = []
+
     for path in sorted(base_dir.rglob("*.txt")):
+
         try:
-            content = path.read_text(encoding="utf-8").strip()
+            content = path.read_text(
+                encoding="utf-8"
+            ).strip()
+
         except Exception:
             continue
+
         if not content:
             continue
-        meta = parse_hierarchy(path, base_dir)
+
+        meta = parse_hierarchy(
+            path,
+            base_dir
+        )
+
         docs.append({
-            "path":    str(path),
+            "path": str(path),
             "content": content,
-            "meta":    meta,
-            "tokens":  tokenize(content),
+            "meta": meta,
+            "tokens": tokenize(content),
         })
+
     return docs
 
 
-# ---------------------------------------------------------------------------
-# Hash del corpus (per capire se rindexare)
-# ---------------------------------------------------------------------------
+# ============================================================================
+# HASH CORPUS
+# ============================================================================
+
 def corpus_hash(base_dir: Path) -> str:
+
     h = hashlib.md5()
-    for path in sorted(base_dir.rglob("*.txt")):
-        h.update(str(path).encode())
-        h.update(str(path.stat().st_mtime).encode())
+
+    for path in sorted(
+        base_dir.rglob("*.txt")
+    ):
+
+        h.update(
+            str(path).encode()
+        )
+
+        h.update(
+            str(path.stat().st_mtime).encode()
+        )
+
     return h.hexdigest()
 
 
-# ---------------------------------------------------------------------------
-# BM25 nativo (senza dipendenze esterne)
-# ---------------------------------------------------------------------------
+# ============================================================================
+# BM25
+# ============================================================================
+
 class BM25:
-    def __init__(self, corpus: list[list[str]], k1: float = 1.5, b: float = 0.75):
+
+    def __init__(
+        self,
+        corpus: list[list[str]],
+        k1: float = 1.5,
+        b: float = 0.75,
+    ):
+
         self.k1 = k1
-        self.b  = b
-        self.n  = len(corpus)
-        self.avgdl = sum(len(d) for d in corpus) / max(self.n, 1)
+        self.b = b
+        self.n = len(corpus)
+
+        self.avgdl = (
+            sum(len(d) for d in corpus)
+            / max(self.n, 1)
+        )
+
         self.df: dict[str, int] = defaultdict(int)
-        self.tf: list[dict[str, float]] = []
+
+        self.tf: list[
+            dict[str, float]
+        ] = []
+
         for doc in corpus:
+
             freq = Counter(doc)
+
             self.tf.append(freq)
+
             for term in freq:
                 self.df[term] += 1
-        self.idf: dict[str, float] = {
-            term: math.log((self.n - df + 0.5) / (df + 0.5) + 1)
+
+        self.idf = {
+
+            term: math.log(
+                (self.n - df + 0.5)
+                / (df + 0.5)
+                + 1
+            )
+
             for term, df in self.df.items()
         }
 
-    def get_scores(self, query: list[str]) -> list[float]:
+    def get_scores(
+        self,
+        query: list[str]
+    ) -> list[float]:
+
         scores = []
-        for i, tf in enumerate(self.tf):
-            dl    = sum(tf.values())
+
+        for tf in self.tf:
+
+            dl = sum(tf.values())
+
             score = 0.0
+
             for term in query:
+
                 if term not in tf:
                     continue
-                idf = self.idf.get(term, 0)
-                f   = tf[term]
-                score += idf * (f * (self.k1 + 1)) / (
-                    f + self.k1 * (1 - self.b + self.b * dl / self.avgdl)
+
+                idf = self.idf.get(
+                    term,
+                    0
                 )
+
+                f = tf[term]
+
+                score += (
+                    idf
+                    * (
+                        f * (self.k1 + 1)
+                    )
+                    / (
+                        f
+                        + self.k1
+                        * (
+                            1
+                            - self.b
+                            + self.b
+                            * dl
+                            / self.avgdl
+                        )
+                    )
+                )
+
             scores.append(score)
+
         return scores
 
 
-def build_index(chunks: list[dict]) -> BM25:
-    corpus = [c["tokens"] for c in chunks]
+def build_index(
+    chunks: list[dict]
+) -> BM25:
+
+    corpus = [
+        chunk["tokens"]
+        for chunk in chunks
+    ]
+
     return BM25(corpus)
 
 
-@st.cache_resource(show_spinner="📚 Indicizzazione corpus… (solo al primo avvio)")
+# ============================================================================
+# CARICAMENTO INDICE
+# ============================================================================
+
+@st.cache_resource(
+    show_spinner="📚 Indicizzazione del corpus..."
+)
 def load_index():
+
     download_from_hf()
 
-    current_hash = corpus_hash(DOCS_DIR)
+    current_hash = corpus_hash(
+        DOCS_DIR
+    )
 
-    # Usa indice cached se il corpus non è cambiato
-    if INDEX_FILE.exists() and HASH_FILE.exists():
-        if HASH_FILE.read_text().strip() == current_hash:
-            with open(INDEX_FILE, "rb") as f:
+    if (
+        INDEX_FILE.exists()
+        and HASH_FILE.exists()
+    ):
+
+        if (
+            HASH_FILE.read_text().strip()
+            == current_hash
+        ):
+
+            with open(
+                INDEX_FILE,
+                "rb"
+            ) as f:
+
                 data = pickle.load(f)
-            return data["chunks"], data["bm25"]
 
-    # Rindexazione
-    chunks = load_all_chunks(DOCS_DIR)
+            return (
+                data["chunks"],
+                data["bm25"],
+            )
+
+    chunks = load_all_chunks(
+        DOCS_DIR
+    )
+
     if not chunks:
-        st.error("Nessun file .txt trovato nel dataset Hugging Face.")
+
+        st.error(
+            "Nessun file .txt trovato "
+            "nel dataset Hugging Face."
+        )
+
         st.stop()
 
-    bm25 = build_index(chunks)
+    bm25 = build_index(
+        chunks
+    )
 
-    with open(INDEX_FILE, "wb") as f:
-        pickle.dump({"chunks": chunks, "bm25": bm25}, f)
-    HASH_FILE.write_text(current_hash)
+    with open(
+        INDEX_FILE,
+        "wb"
+    ) as f:
+
+        pickle.dump(
+            {
+                "chunks": chunks,
+                "bm25": bm25,
+            },
+            f
+        )
+
+    HASH_FILE.write_text(
+        current_hash
+    )
 
     return chunks, bm25
 
 
-# ---------------------------------------------------------------------------
-# Query expansion
-# ---------------------------------------------------------------------------
-def expand_query(query: str) -> list[str]:
+# ============================================================================
+# QUERY EXPANSION
+# ============================================================================
+
+def expand_query(
+    query: str
+) -> list[str]:
+
     words = tokenize(query)
+
     expanded = list(words)
+
     for word in words:
-        for key, syns in LEGAL_SYNONYMS.items():
-            if word == key or word in syns:
-                expanded += [key] + syns
-    return list(dict.fromkeys(expanded))
+
+        for key, synonyms in (
+            LEGAL_SYNONYMS.items()
+        ):
+
+            if (
+                word == key
+                or word in synonyms
+            ):
+
+                expanded += [
+                    key
+                ]
+
+                expanded += synonyms
+
+    return list(
+        dict.fromkeys(expanded)
+    )
 
 
-# ---------------------------------------------------------------------------
-# Retrieval BM25 + boosting gerarchico
-# ---------------------------------------------------------------------------
-def retrieve(query: str, chunks: list[dict], bm25: BM25, max_results: int = MAX_RESULTS) -> list[dict]:
-    query_tokens = expand_query(query)
+# ============================================================================
+# RETRIEVAL
+# ============================================================================
 
-    # Punteggi BM25 base
-    bm25_scores = bm25.get_scores(query_tokens)
+def retrieve(
+    query: str,
+    chunks: list[dict],
+    bm25: BM25,
+    max_results: int = MAX_RESULTS,
+) -> list[tuple]:
 
-    # Boosting gerarchico: premia chunk il cui path contiene termini della query
+    query_tokens = expand_query(
+        query
+    )
+
+    bm25_scores = bm25.get_scores(
+        query_tokens
+    )
+
     boosted = []
-    for i, (chunk, score) in enumerate(zip(chunks, bm25_scores)):
-        meta         = chunk["meta"]
-        topic_match  = sum(1 for t in query_tokens if t in meta["topic_tokens"])
-        depth_weight = LEVEL_BOOST.get(min(meta["depth"], 3), 2.0)
-        final_score  = score + topic_match * depth_weight
+
+    for i, (
+        chunk,
+        score
+    ) in enumerate(
+        zip(chunks, bm25_scores)
+    ):
+
+        meta = chunk["meta"]
+
+        topic_match = sum(
+            1
+            for token in query_tokens
+            if token in meta["topic_tokens"]
+        )
+
+        depth_weight = LEVEL_BOOST.get(
+            min(meta["depth"], 3),
+            2.0
+        )
+
+        final_score = (
+            score
+            + topic_match * depth_weight
+        )
 
         if final_score > 0:
-            boosted.append((final_score, i, chunk))
 
-    boosted.sort(reverse=True, key=lambda x: x[0])
+            boosted.append(
+                (
+                    final_score,
+                    i,
+                    chunk
+                )
+            )
 
-    # Deduplicazione: max 2 chunk per file
-    seen: dict[str, int] = defaultdict(int)
+    boosted.sort(
+        reverse=True,
+        key=lambda x: x[0]
+    )
+
+    seen = defaultdict(int)
+
     results = []
+
     for score, _, chunk in boosted:
-        p = chunk["path"]
-        if seen[p] < 2:
-            results.append((score, chunk))
-            seen[p] += 1
+
+        path = chunk["path"]
+
+        if seen[path] < 2:
+
+            results.append(
+                (
+                    score,
+                    chunk
+                )
+            )
+
+            seen[path] += 1
+
         if len(results) >= max_results:
             break
 
-    return results   # lista di (score, chunk)
+    return results
 
 
-# ---------------------------------------------------------------------------
-# Costruzione contesto per il prompt
-# ---------------------------------------------------------------------------
-def build_context(results: list[tuple]) -> str:
+# ============================================================================
+# CONTEXT
+# ============================================================================
+
+def build_context(
+    results: list[tuple]
+) -> str:
+
     parts = []
+
     for score, chunk in results:
+
         meta = chunk["meta"]
-        breadcrumb = " > ".join(meta["folders"] + [meta["filename"]])
-        parts.append(f"[{breadcrumb}]\n{chunk['content']}")
-    return "\n\n---\n\n".join(parts)
+
+        breadcrumb = " > ".join(
+            meta["folders"]
+            + [meta["filename"]]
+        )
+
+        parts.append(
+            f"[{breadcrumb}]\n"
+            f"{chunk['content']}"
+        )
+
+    return "\n\n---\n\n".join(
+        parts
+    )
 
 
-# ---------------------------------------------------------------------------
-# Ollama
-# ---------------------------------------------------------------------------
-def ask_ollama(prompt: str, model: str = GROQ_MODEL) -> str:
-    client   = Groq(api_key=GROQ_API_KEY)
+# ============================================================================
+# GROQ
+# ============================================================================
+
+def ask_groq(
+    messages: list[dict]
+) -> str:
+
+    client = Groq(
+        api_key=GROQ_API_KEY
+    )
+
     response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
+
+        model=GROQ_MODEL,
+
+        messages=messages,
+
         max_tokens=2048,
     )
-    return response.choices[0].message.content
+
+    return (
+        response
+        .choices[0]
+        .message
+        .content
+    )
 
 
-# ---------------------------------------------------------------------------
-# Prompt templates
-# ---------------------------------------------------------------------------
-PROMPTS = {
-    "Chat": """Sei un assistente esperto di diritto privato italiano (manuale Galgano).
-Rispondi alla domanda usando SOLO il contesto fornito. Sii preciso e tecnico.
-Se il contesto non contiene informazioni sufficienti, dillo esplicitamente.
+# ============================================================================
+# PROMPT
+# ============================================================================
 
-CONTESTO:
-{context}
+SYSTEM_PROMPT = """
+Sei un assistente universitario specializzato
+in diritto privato italiano.
 
-DOMANDA:
-{query}
+La tua banca dati principale è costituita
+dal Manuale Galgano fornito nel contesto.
 
-RISPOSTA:""",
+Regole:
 
-    "Schema": """Sei un assistente esperto di diritto privato italiano (manuale Galgano).
-Trasforma il contenuto in uno schema ordinato per lo studio universitario.
-Struttura: Definizione → Fondamento normativo → Elementi essenziali → Effetti → Eccezioni/Limiti.
-Non inventare informazioni non presenti nel contesto.
+1. Usa prioritariamente le informazioni
+   contenute nel contesto fornito.
 
-CONTESTO:
-{context}
+2. Non inventare contenuti giuridici
+   che non risultano dal contesto.
 
-ARGOMENTO:
-{query}
+3. Se il contesto non è sufficiente,
+   dichiaralo esplicitamente.
 
-SCHEMA:""",
+4. Mantieni terminologia giuridica precisa.
 
-    "Flashcard": """Sei un assistente esperto di diritto privato italiano (manuale Galgano).
-Crea 10 flashcard di studio sull'argomento usando SOLO il contesto.
+5. Quando possibile, collega logicamente
+   istituti, concetti e norme menzionate
+   nel contesto.
 
-Formato rigoroso:
-FRONT: [domanda tecnica]
-BACK: [risposta concisa e precisa]
+6. Non attribuire al Manuale Galgano
+   informazioni che non risultano presenti
+   nei documenti recuperati.
 
-CONTESTO:
-{context}
+7. Rispondi in italiano.
 
-ARGOMENTO:
-{query}
+8. Per una domanda di studio, privilegia
+   una spiegazione discorsiva ma schematica,
+   adatta alla preparazione universitaria.
+"""
 
-FLASHCARD:""",
 
-    "Quiz": """Sei un assistente esperto di diritto privato italiano (manuale Galgano).
-Crea un quiz sull'argomento usando SOLO il contesto.
+MODE_INSTRUCTIONS = {
 
-Genera:
-- 5 domande a risposta multipla (A/B/C/D) con risposta corretta indicata
+    "Chat": """
+Rispondi normalmente alla domanda.
+Costruisci una spiegazione chiara,
+tecnica e ragionata.
+""",
+
+    "Schema": """
+Trasforma il materiale recuperato
+in uno schema ordinato per lo studio.
+
+Struttura preferenziale:
+
+Definizione
+→ Fondamento
+→ Elementi
+→ Disciplina
+→ Effetti
+→ Limiti/eccezioni
+→ Collegamenti
+
+Non aggiungere informazioni non presenti
+nel contesto.
+""",
+
+    "Flashcard": """
+Crea 10 flashcard.
+
+Formato:
+
+FRONT: domanda tecnica
+BACK: risposta precisa e concisa
+
+Usa esclusivamente il contesto.
+""",
+
+    "Quiz": """
+Crea un quiz composto da:
+
+- 5 domande a risposta multipla A/B/C/D
 - 3 vero/falso con spiegazione
-- 2 domande aperte brevi con risposta modello
+- 2 domande aperte con risposta modello
 
-CONTESTO:
-{context}
-
-ARGOMENTO:
-{query}
-
-QUIZ:""",
+Usa esclusivamente il contesto.
+""",
 }
 
 
-# ---------------------------------------------------------------------------
-# Storico — salvataggio e lettura
-# ---------------------------------------------------------------------------
-import json as _json
-from datetime import datetime
+# ============================================================================
+# CONVERSAZIONI
+# ============================================================================
 
-def save_log(query: str, mode: str, output: str) -> None:
-    """Salva domanda e risposta nello storico persistente."""
+def load_conversations() -> list:
+
+    if not CONVERSATIONS_FILE.exists():
+        return []
+
     try:
-        try:
-            existing = _json.loads(st.session_state.get("_log_cache", "[]"))
-        except Exception:
-            existing = []
-        entry = {
-            "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M"),
-            "modalita":  mode,
-            "domanda":   query,
-            "risposta":  output,
-        }
-        existing.append(entry)
-        # Mantieni ultimi 200 log
-        existing = existing[-200:]
-        st.session_state["_log_cache"] = _json.dumps(existing)
-        # Salva su file locale (persiste su Streamlit Cloud tra riavvii)
-        log_path = Path("/tmp/storico.json")
-        log_path.write_text(_json.dumps(existing, ensure_ascii=False, indent=2))
+
+        return json.loads(
+            CONVERSATIONS_FILE.read_text(
+                encoding="utf-8"
+            )
+        )
+
+    except Exception:
+        return []
+
+
+def save_conversations(
+    conversations: list
+) -> None:
+
+    try:
+
+        CONVERSATIONS_FILE.write_text(
+            json.dumps(
+                conversations,
+                ensure_ascii=False,
+                indent=2
+            ),
+            encoding="utf-8"
+        )
+
     except Exception:
         pass
 
 
-def load_log() -> list:
-    """Carica lo storico dal file."""
-    log_path = Path("/tmp/storico.json")
-    if log_path.exists():
-        try:
-            return _json.loads(log_path.read_text())
-        except Exception:
-            return []
-    return []
+def create_conversation() -> dict:
+
+    now = datetime.now()
+
+    return {
+        "id": hashlib.md5(
+            now.isoformat().encode()
+        ).hexdigest()[:12],
+
+        "title": "Nuova conversazione",
+
+        "created_at": now.strftime(
+            "%d/%m/%Y %H:%M"
+        ),
+
+        "updated_at": now.strftime(
+            "%d/%m/%Y %H:%M"
+        ),
+
+        "messages": [],
+    }
 
 
-# ---------------------------------------------------------------------------
-# App Streamlit
-# ---------------------------------------------------------------------------
+def save_current_conversation():
+
+    conversation = (
+        st.session_state.conversation
+    )
+
+    conversations = load_conversations()
+
+    found = False
+
+    for i, existing in enumerate(
+        conversations
+    ):
+
+        if (
+            existing["id"]
+            == conversation["id"]
+        ):
+
+            conversations[i] = conversation
+
+            found = True
+
+            break
+
+    if not found:
+
+        conversations.append(
+            conversation
+        )
+
+    conversations = conversations[-100:]
+
+    save_conversations(
+        conversations
+    )
+
+
+def load_conversation(
+    conversation_id: str
+):
+
+    conversations = load_conversations()
+
+    for conversation in conversations:
+
+        if (
+            conversation["id"]
+            == conversation_id
+        ):
+
+            return conversation
+
+    return None
+
+
+# ============================================================================
+# SESSION STATE
+# ============================================================================
+
+if "conversation" not in st.session_state:
+
+    st.session_state.conversation = (
+        create_conversation()
+    )
+
+
+if "last_sources" not in st.session_state:
+
+    st.session_state.last_sources = {}
+
+
+if "show_sources" not in st.session_state:
+
+    st.session_state.show_sources = True
+
+
+# ============================================================================
+# PAGE CONFIG
+# ============================================================================
+
+st.set_page_config(
+    page_title="IA Diritto Privato",
+    page_icon="⚖️",
+    layout="wide",
+)
+
+
+# ============================================================================
+# CSS
+# ============================================================================
+
+st.markdown(
+    """
+    <style>
+
+    .main-title {
+        font-size: 2rem;
+        font-weight: 700;
+        margin-bottom: 0;
+    }
+
+    .subtitle {
+        color: #777;
+        margin-top: 0;
+        margin-bottom: 1.5rem;
+    }
+
+    .source-box {
+        padding: 0.7rem;
+        border-radius: 8px;
+        border: 1px solid #ddd;
+        margin-bottom: 0.5rem;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+# ============================================================================
+# CARICAMENTO DATABASE
+# ============================================================================
+
 chunks, bm25 = load_index()
 
-st.set_page_config(page_title="IA Diritto Privato – Galgano", layout="wide")
-st.title("📖 IA Diritto Privato – Manuale Galgano")
-st.caption(f"Corpus: {len(chunks)} documenti indicizzati")
 
-# Sidebar — navigazione pagine
-pagina = st.sidebar.radio("📌 Navigazione", ["🎓 Assistente", "📋 Storico"])
+# ============================================================================
+# SIDEBAR
+# ============================================================================
 
-# ---------------------------------------------------------------------------
-# PAGINA: STORICO
-# ---------------------------------------------------------------------------
-if pagina == "📋 Storico":
-    st.header("📋 Storico domande e risposte")
+with st.sidebar:
 
-    password = st.text_input("Password di accesso", type="password")
-    PASSWORD_CORRETTA = st.secrets.get("STORICO_PASSWORD", "galgano2024")
+    st.markdown(
+        "## ⚖️ IA Diritto Privato"
+    )
 
-    if password != PASSWORD_CORRETTA:
-        st.warning("Inserisci la password per accedere allo storico.")
-        st.stop()
+    st.caption(
+        "Assistente RAG — Manuale Galgano"
+    )
 
-    logs = load_log()
-    if not logs:
-        st.info("Nessuna domanda registrata ancora.")
-        st.stop()
+    st.divider()
 
-    st.success(f"✅ {len(logs)} domande registrate")
+    # ------------------------------------------------------------
+    # NUOVA CHAT
+    # ------------------------------------------------------------
 
-    # Filtro per modalità
-    modalita_filter = st.selectbox("Filtra per modalità", ["Tutte", "Chat", "Schema", "Flashcard", "Quiz"])
+    if st.button(
+        "＋ Nuova conversazione",
+        use_container_width=True
+    ):
 
-    for entry in reversed(logs):
-        if modalita_filter != "Tutte" and entry["modalita"] != modalita_filter:
-            continue
-        with st.expander(f"[{entry['timestamp']}] **{entry['modalita']}** — {entry['domanda'][:80]}…"):
-            st.markdown(f"**🕐 Data/ora:** {entry['timestamp']}")
-            st.markdown(f"**📌 Modalità:** {entry['modalita']}")
-            st.markdown(f"**❓ Domanda:** {entry['domanda']}")
-            st.markdown("**💬 Risposta:**")
-            st.write(entry["risposta"])
+        st.session_state.conversation = (
+            create_conversation()
+        )
 
-# ---------------------------------------------------------------------------
-# PAGINA: ASSISTENTE
-# ---------------------------------------------------------------------------
-else:
-    mode = st.sidebar.selectbox("Modalità", ["Chat", "Schema", "Flashcard", "Quiz"])
+        st.session_state.last_sources = {}
 
-    with st.sidebar.expander("⚙️ Retrieval"):
-        max_results  = st.slider("Chunk recuperati", 2, 10, MAX_RESULTS)
-        show_sources = st.checkbox("Mostra fonti con anteprima", value=True)
-        show_scores  = st.checkbox("Mostra punteggi BM25", value=False)
+        st.rerun()
 
-    query = st.text_input("Inserisci argomento o domanda", placeholder="es. responsabilità extracontrattuale, usucapione, nullità del contratto…")
+    st.divider()
 
-    if st.button("Genera", type="primary") and query:
-        with st.spinner("Ricerca nel corpus…"):
-            results = retrieve(query, chunks, bm25, max_results=max_results)
+    # ------------------------------------------------------------
+    # MODALITÀ
+    # ------------------------------------------------------------
+
+    st.markdown(
+        "### 🎓 Modalità"
+    )
+
+    mode = st.selectbox(
+        "Modalità di risposta",
+        [
+            "Chat",
+            "Schema",
+            "Flashcard",
+            "Quiz",
+        ],
+        label_visibility="collapsed"
+    )
+
+    st.divider()
+
+    # ------------------------------------------------------------
+    # RETRIEVAL
+    # ------------------------------------------------------------
+
+    with st.expander(
+        "⚙️ Retrieval"
+    ):
+
+        max_results = st.slider(
+            "Documenti recuperati",
+            2,
+            10,
+            MAX_RESULTS
+        )
+
+        st.session_state.show_sources = (
+            st.checkbox(
+                "Mostra fonti",
+                value=True
+            )
+        )
+
+        show_scores = st.checkbox(
+            "Mostra punteggio BM25",
+            value=False
+        )
+
+    st.divider()
+
+    # ------------------------------------------------------------
+    # CONVERSAZIONI PRECEDENTI
+    # ------------------------------------------------------------
+
+    st.markdown(
+        "### 🕘 Conversazioni"
+    )
+
+    conversations = load_conversations()
+
+    if conversations:
+
+        for conversation in reversed(
+            conversations[-10:]
+        ):
+
+            title = conversation.get(
+                "title",
+                "Conversazione"
+            )
+
+            if len(title) > 35:
+                title = title[:35] + "…"
+
+            if st.button(
+                title,
+                key=f"conversation_{conversation['id']}",
+                use_container_width=True
+            ):
+
+                loaded = load_conversation(
+                    conversation["id"]
+                )
+
+                if loaded:
+
+                    st.session_state.conversation = (
+                        loaded
+                    )
+
+                    st.session_state.last_sources = {}
+
+                    st.rerun()
+
+    else:
+
+        st.caption(
+            "Nessuna conversazione salvata."
+        )
+
+    st.divider()
+
+    st.caption(
+        f"📚 {len(chunks)} documenti indicizzati"
+    )
+
+
+# ============================================================================
+# HEADER
+# ============================================================================
+
+st.markdown(
+    '<div class="main-title">⚖️ IA Diritto Privato</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="subtitle">Manuale Galgano · sistema RAG</div>',
+    unsafe_allow_html=True
+)
+
+
+# ============================================================================
+# CHAT
+# ============================================================================
+
+conversation = st.session_state.conversation
+
+messages = conversation["messages"]
+
+
+# ============================================================================
+# MESSAGGI
+# ============================================================================
+
+for index, message in enumerate(messages):
+
+    role = message["role"]
+
+    if role == "user":
+
+        with st.chat_message(
+            "user"
+        ):
+
+            st.write(
+                message["content"]
+            )
+
+    else:
+
+        with st.chat_message(
+            "assistant"
+        ):
+
+            st.write(
+                message["content"]
+            )
+
+            sources = message.get(
+                "sources",
+                []
+            )
+
+            if (
+                st.session_state.show_sources
+                and sources
+            ):
+
+                with st.expander(
+                    f"📚 Fonti utilizzate ({len(sources)})"
+                ):
+
+                    for source in sources:
+
+                        breadcrumb = source[
+                            "breadcrumb"
+                        ]
+
+                        score = source[
+                            "score"
+                        ]
+
+                        preview = source[
+                            "preview"
+                        ]
+
+                        if show_scores:
+
+                            st.markdown(
+                                f"**{breadcrumb}**  "
+                                f"`score: {score:.3f}`"
+                            )
+
+                        else:
+
+                            st.markdown(
+                                f"**{breadcrumb}**"
+                            )
+
+                        st.caption(
+                            preview
+                        )
+
+                        st.divider()
+
+
+# ============================================================================
+# INPUT CHAT
+# ============================================================================
+
+query = st.chat_input(
+    "Scrivi una domanda di diritto privato..."
+)
+
+
+# ============================================================================
+# ELABORAZIONE DOMANDA
+# ============================================================================
+
+if query:
+
+    # ------------------------------------------------------------
+    # AGGIUNGI MESSAGGIO UTENTE
+    # ------------------------------------------------------------
+
+    messages.append(
+        {
+            "role": "user",
+            "content": query,
+        }
+    )
+
+    # Titolo automatico
+    if conversation["title"] == "Nuova conversazione":
+
+        title = query.strip()
+
+        if len(title) > 55:
+            title = title[:55] + "…"
+
+        conversation["title"] = title
+
+    conversation["updated_at"] = (
+        datetime.now().strftime(
+            "%d/%m/%Y %H:%M"
+        )
+    )
+
+    # ------------------------------------------------------------
+    # VISUALIZZA DOMANDA
+    # ------------------------------------------------------------
+
+    with st.chat_message(
+        "user"
+    ):
+
+        st.write(query)
+
+    # ------------------------------------------------------------
+    # RETRIEVAL
+    # ------------------------------------------------------------
+
+    with st.chat_message(
+        "assistant"
+    ):
+
+        with st.spinner(
+            "🔎 Ricerca nella banca dati..."
+        ):
+
+            results = retrieve(
+                query,
+                chunks,
+                bm25,
+                max_results=max_results
+            )
 
         if not results:
-            st.warning("⚠️ Nessun documento rilevante trovato. Prova con termini più specifici o sinonimi.")
-            st.stop()
 
-        context = build_context(results)
-        prompt  = PROMPTS[mode].format(context=context, query=query)
+            output = (
+                "Non ho trovato documenti "
+                "sufficientemente rilevanti "
+                "nella banca dati del Manuale "
+                "Galgano per rispondere alla domanda."
+            )
 
-        with st.spinner(f"Generazione [{mode}]…"):
-            output = ask_ollama(prompt)
+            sources = []
 
-        # Salva nello storico
-        save_log(query, mode, output)
+        else:
 
-        st.subheader(f"Modalità: {mode}")
+            context = build_context(
+                results
+            )
+
+            # ----------------------------------------------------
+            # COSTRUZIONE DEL PROMPT
+            # ----------------------------------------------------
+
+            prompt = f"""
+{SYSTEM_PROMPT}
+
+MODALITÀ:
+{mode}
+
+ISTRUZIONI DELLA MODALITÀ:
+{MODE_INSTRUCTIONS[mode]}
+
+CONTESTO RECUPERATO DAL MANUALE GALGANO:
+{context}
+
+DOMANDA DELL'UTENTE:
+{query}
+
+Rispondi ora.
+"""
+
+            # ----------------------------------------------------
+            # GENERAZIONE
+            # ----------------------------------------------------
+
+            with st.spinner(
+                "⚖️ Elaborazione della risposta..."
+            ):
+
+                output = ask_groq(
+                    [
+                        {
+                            "role": "system",
+                            "content": SYSTEM_PROMPT,
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        },
+                    ]
+                )
+
+            # ----------------------------------------------------
+            # PREPARA FONTI
+            # ----------------------------------------------------
+
+            sources = []
+
+            for score, chunk in results:
+
+                meta = chunk["meta"]
+
+                breadcrumb = " > ".join(
+                    meta["folders"]
+                    + [meta["filename"]]
+                )
+
+                preview = chunk[
+                    "content"
+                ]
+
+                if len(preview) > 400:
+
+                    preview = (
+                        preview[:400]
+                        + "…"
+                    )
+
+                sources.append(
+                    {
+                        "breadcrumb": breadcrumb,
+                        "score": score,
+                        "preview": preview,
+                    }
+                )
+
+        # --------------------------------------------------------
+        # MOSTRA RISPOSTA
+        # --------------------------------------------------------
+
         st.write(output)
 
-        if show_sources:
-            with st.expander(f"📄 Fonti utilizzate ({len(results)} documenti)"):
-                for score, chunk in results:
-                    meta       = chunk["meta"]
-                    breadcrumb = " > ".join(meta["folders"] + [meta["filename"]])
-                    header     = f"**{breadcrumb}**"
+        if (
+            st.session_state.show_sources
+            and sources
+        ):
+
+            with st.expander(
+                f"📚 Fonti utilizzate ({len(sources)})"
+            ):
+
+                for source in sources:
+
                     if show_scores:
-                        header += f"  `score: {score:.3f}`"
-                    st.markdown(header)
-                    st.caption(chunk["content"][:400] + ("…" if len(chunk["content"]) > 400 else ""))
+
+                        st.markdown(
+                            f"**{source['breadcrumb']}**  "
+                            f"`score: {source['score']:.3f}`"
+                        )
+
+                    else:
+
+                        st.markdown(
+                            f"**{source['breadcrumb']}**"
+                        )
+
+                    st.caption(
+                        source["preview"]
+                    )
+
                     st.divider()
+
+    # ------------------------------------------------------------
+    # SALVA RISPOSTA
+    # ------------------------------------------------------------
+
+    messages.append(
+        {
+            "role": "assistant",
+            "content": output,
+            "mode": mode,
+            "sources": sources,
+            "timestamp": datetime.now().strftime(
+                "%d/%m/%Y %H:%M"
+            ),
+        }
+    )
+
+    conversation["updated_at"] = (
+        datetime.now().strftime(
+            "%d/%m/%Y %H:%M"
+        )
+    )
+
+    save_current_conversation()
+
+    st.rerun()
