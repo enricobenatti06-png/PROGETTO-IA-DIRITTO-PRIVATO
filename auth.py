@@ -6,15 +6,15 @@ from supabase import create_client
 # SUPABASE
 # ============================================================
 
-def get_supabase():
+def create_supabase_client():
 
-    return create_client(
-        st.secrets["SUPABASE_URL"],
-        st.secrets["SUPABASE_KEY"]
-    )
+    url = st.secrets["SUPABASE_URL"].strip()
+    key = st.secrets["SUPABASE_KEY"].strip()
+
+    return create_client(url, key)
 
 
-supabase = get_supabase()
+supabase = create_supabase_client()
 
 
 # ============================================================
@@ -47,7 +47,6 @@ def logout():
         pass
 
     st.session_state.clear()
-
     st.rerun()
 
 
@@ -73,6 +72,9 @@ def load_user_session(user):
 
     profile = get_profile(user.id)
 
+    if profile is None:
+        profile = {"role": "user"}
+
     st.session_state.user = user
     st.session_state.profile = profile
     st.session_state.role = profile.get("role", "user")
@@ -88,8 +90,10 @@ def login(email, password):
 
     try:
 
-        response = supabase.auth.sign_in_with_password({
-            "email": email,
+        client = create_supabase_client()
+
+        response = client.auth.sign_in_with_password({
+            "email": email.strip(),
             "password": password
         })
 
@@ -104,7 +108,7 @@ def login(email, password):
 
     except Exception as e:
 
-        return False, str(e)
+        return False, f"{type(e).__name__}: {str(e)}"
 
 
 # ============================================================
@@ -115,24 +119,29 @@ def register(email, password):
 
     try:
 
-        response = supabase.auth.sign_up({
-            "email": email,
+        # Creiamo un client NUOVO ad ogni registrazione.
+        client = create_supabase_client()
+
+        clean_email = email.strip()
+
+        response = client.auth.sign_up({
+            "email": clean_email,
             "password": password
         })
 
         user = response.user
 
         if user is None:
-            return False, "Registrazione non riuscita."
+            return False, "Supabase non ha restituito un utente."
 
         return True, (
             "Registrazione completata. "
-            "Controlla la tua email se è richiesta la conferma."
+            "Controlla la tua email per confermare l'account."
         )
 
     except Exception as e:
 
-        return False, str(e)
+        return False, f"{type(e).__name__}: {str(e)}"
 
 
 # ============================================================
@@ -177,14 +186,11 @@ def show_auth_page():
                 use_container_width=True
             )
 
-
         if submitted:
 
             if not email or not password:
 
-                st.error(
-                    "Inserisci email e password."
-                )
+                st.error("Inserisci email e password.")
 
             else:
 
@@ -196,7 +202,6 @@ def show_auth_page():
                 if success:
 
                     st.success(message)
-
                     st.rerun()
 
                 else:
@@ -233,20 +238,15 @@ def show_auth_page():
                 use_container_width=True
             )
 
-
         if submitted:
 
             if not email or not password:
 
-                st.error(
-                    "Compila tutti i campi."
-                )
+                st.error("Compila tutti i campi.")
 
             elif password != password_confirm:
 
-                st.error(
-                    "Le password non coincidono."
-                )
+                st.error("Le password non coincidono.")
 
             elif len(password) < 6:
 
