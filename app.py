@@ -1,13 +1,6 @@
 import streamlit as st
 
-from auth import (
-    is_logged_in,
-    get_current_user,
-    show_auth_page,
-    show_user_sidebar,
-    load_user_session,
-    supabase
-)
+from chat import show_chat
 
 
 st.set_page_config(
@@ -18,9 +11,14 @@ st.set_page_config(
 )
 
 
+# =========================
+# STILE
+# =========================
+
 st.markdown(
     """
     <style>
+
     .block-container {
         padding-top: 2rem;
         padding-bottom: 2rem;
@@ -40,70 +38,16 @@ st.markdown(
     h1 {
         margin-bottom: 0.5rem;
     }
+
     </style>
     """,
     unsafe_allow_html=True
 )
 
 
-def restore_session():
-    if is_logged_in():
-        return True
-
-    try:
-        session_response = supabase.auth.get_session()
-
-        if session_response is None:
-            return False
-
-        session = session_response
-
-        if hasattr(session_response, "session"):
-            session = session_response.session
-
-        if session is None:
-            return False
-
-        user = getattr(session, "user", None)
-
-        if user is None:
-            return False
-
-        load_user_session(user)
-
-        return True
-
-    except Exception:
-        return False
-
-
 # =========================
-# AUTENTICAZIONE
+# APPLICAZIONE
 # =========================
-
-logged_in = restore_session()
-
-
-if not logged_in:
-    show_auth_page()
-    st.stop()
-
-
-# =========================
-# UTENTE AUTENTICATO
-# =========================
-
-user = get_current_user()
-
-show_user_sidebar()
-
-
-# =========================
-# CHAT
-# =========================
-
-from chat import show_chat
-
 
 st.title("⚖️ Assistente di Diritto Privato")
 
@@ -112,4 +56,14 @@ st.caption(
     "dottrina, giurisprudenza e materiale didattico."
 )
 
-show_chat(user)
+
+show_chat(
+    user=type(
+        "DemoUser",
+        (),
+        {
+            "id": "demo-user",
+            "email": "demo@progetto.local"
+        }
+    )()
+)
