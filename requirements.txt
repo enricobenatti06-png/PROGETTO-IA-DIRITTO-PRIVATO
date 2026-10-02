@@ -1,6 +1,6 @@
 streamlit
 supabase
-openai
+groq
 huggingface_hub
 sentence-transformers
 torch
