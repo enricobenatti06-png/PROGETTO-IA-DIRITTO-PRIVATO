@@ -6,7 +6,6 @@ from supabase import create_client
 # SUPABASE
 # ============================================================
 
-@st.cache_resource
 def get_supabase():
 
     return create_client(
@@ -34,7 +33,10 @@ def get_current_role():
 
 def is_logged_in():
 
-    return "user" in st.session_state and st.session_state.user is not None
+    return (
+        "user" in st.session_state
+        and st.session_state.user is not None
+    )
 
 
 def logout():
@@ -199,9 +201,7 @@ def show_auth_page():
 
                 else:
 
-                    st.error(
-                        "Login non riuscito."
-                    )
+                    st.error(message)
 
 
     # ========================================================
