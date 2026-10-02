@@ -1,3 +1,7 @@
 streamlit
-groq
+supabase
+openai
 huggingface_hub
+sentence-transformers
+torch
+numpy
