@@ -1,7 +1,9 @@
 import streamlit as st
 
 from database import (
-    get_conversations,
+    get_my_conversations,
+    get_public_conversations,
+    get_conversation,
     create_conversation,
     get_messages,
     create_message,
@@ -11,16 +13,12 @@ from database import (
 from rag import answer_question
 
 
-# ============================================================
-# CONFIGURAZIONE
-# ============================================================
-
 MAX_TITLE_LENGTH = 60
 
 
-# ============================================================
-# SESSION STATE
-# ============================================================
+# =========================
+# SESSIONE CHAT
+# =========================
 
 def initialize_chat_state():
 
@@ -31,9 +29,9 @@ def initialize_chat_state():
         st.session_state.chat_mode = "private"
 
 
-# ============================================================
+# =========================
 # TITOLO
-# ============================================================
+# =========================
 
 def generate_title(question):
 
@@ -45,30 +43,34 @@ def generate_title(question):
     if len(question) <= MAX_TITLE_LENGTH:
         return question
 
-    return question[:MAX_TITLE_LENGTH].rstrip() + "..."
+    return (
+        question[:MAX_TITLE_LENGTH]
+        .rstrip()
+        + "..."
+    )
 
 
-# ============================================================
+# =========================
 # NUOVA CONVERSAZIONE
-# ============================================================
+# =========================
 
 def start_new_conversation(user_id):
 
     conversation = create_conversation(
-        user_id,
-        "Nuova conversazione"
+        user_id=user_id,
+        title="Nuova conversazione",
+        is_public=False
     )
 
     st.session_state.conversation_id = conversation["id"]
-
     st.session_state.chat_mode = "private"
 
     st.rerun()
 
 
-# ============================================================
+# =========================
 # SIDEBAR
-# ============================================================
+# =========================
 
 def show_conversation_sidebar(user):
 
@@ -78,40 +80,28 @@ def show_conversation_sidebar(user):
 
         st.title("Conversazioni")
 
-
-        # ----------------------------------------------------
-        # NUOVA CHAT
-        # ----------------------------------------------------
-
         if st.button(
             "＋ Nuova conversazione",
             use_container_width=True
         ):
-
             start_new_conversation(user_id)
-
 
         st.divider()
 
-
-        # ----------------------------------------------------
-        # CONVERSAZIONI PRIVATE
-        # ----------------------------------------------------
+        # -------------------------
+        # PRIVATE
+        # -------------------------
 
         st.subheader("Le mie conversazioni")
 
-        private_conversations = get_conversations(
-            user_id=user_id,
-            public_only=False
+        private_conversations = get_my_conversations(
+            user_id
         )
 
-
         if not private_conversations:
-
             st.caption(
-                "Nessuna conversazione."
+                "Nessuna conversazione privata."
             )
-
 
         for conversation in private_conversations:
 
@@ -122,39 +112,36 @@ def show_conversation_sidebar(user):
                 "Nuova conversazione"
             )
 
-
             if st.button(
                 title,
                 key=f"private_{conversation_id}",
                 use_container_width=True
             ):
 
-                st.session_state.conversation_id = conversation_id
+                st.session_state.conversation_id = (
+                    conversation_id
+                )
+
                 st.session_state.chat_mode = "private"
 
                 st.rerun()
 
-
-        # ----------------------------------------------------
-        # CONVERSAZIONI PUBBLICHE
-        # ----------------------------------------------------
-
         st.divider()
+
+        # -------------------------
+        # PUBLIC
+        # -------------------------
 
         st.subheader("Conversazioni pubbliche")
 
-        public_conversations = get_conversations(
-            user_id=user_id,
-            public_only=True
+        public_conversations = (
+            get_public_conversations()
         )
 
-
         if not public_conversations:
-
             st.caption(
                 "Nessuna conversazione pubblica."
             )
-
 
         for conversation in public_conversations:
 
@@ -165,29 +152,30 @@ def show_conversation_sidebar(user):
                 "Conversazione pubblica"
             )
 
-
             if st.button(
                 f"🌐 {title}",
                 key=f"public_{conversation_id}",
                 use_container_width=True
             ):
 
-                st.session_state.conversation_id = conversation_id
+                st.session_state.conversation_id = (
+                    conversation_id
+                )
+
                 st.session_state.chat_mode = "public"
 
                 st.rerun()
 
 
-# ============================================================
-# VISUALIZZAZIONE MESSAGGI
-# ============================================================
+# =========================
+# MESSAGGI
+# =========================
 
 def show_messages(conversation_id):
 
     messages = get_messages(
         conversation_id
     )
-
 
     for message in messages:
 
@@ -201,52 +189,43 @@ def show_messages(conversation_id):
             ""
         )
 
-
         if role == "user":
 
             with st.chat_message("user"):
-
                 st.write(content)
-
 
         elif role == "assistant":
 
             with st.chat_message("assistant"):
-
                 st.markdown(content)
-
 
         elif role == "system":
 
             with st.chat_message("assistant"):
-
                 st.caption(content)
-
 
     return messages
 
 
-# ============================================================
+# =========================
 # RAG
-# ============================================================
+# =========================
 
 def ask_rag(question):
 
     try:
 
-        result = answer_question(
+        return answer_question(
             question,
             top_k=5
         )
-
-        return result
 
     except Exception as e:
 
         return {
             "answer": (
-                "Si è verificato un errore durante "
-                "l'elaborazione della domanda."
+                "Si è verificato un errore "
+                "durante l'elaborazione della domanda."
             ),
             "documents": [],
             "context": "",
@@ -254,9 +233,9 @@ def ask_rag(question):
         }
 
 
-# ============================================================
+# =========================
 # FONTI
-# ============================================================
+# =========================
 
 def show_sources(documents):
 
@@ -292,22 +271,22 @@ def show_sources(documents):
 
                 st.caption(
                     preview
-                    + ("..." if len(text) > 500 else "")
+                    + (
+                        "..."
+                        if len(text) > 500
+                        else ""
+                    )
                 )
 
 
-# ============================================================
-# INVIO MESSAGGIO
-# ============================================================
+# =========================
+# PROCESSA DOMANDA
+# =========================
 
 def process_message(
     conversation_id,
     prompt
 ):
-
-    # --------------------------------------------------------
-    # SALVA DOMANDA
-    # --------------------------------------------------------
 
     create_message(
         conversation_id,
@@ -315,25 +294,12 @@ def process_message(
         prompt
     )
 
-
-    # --------------------------------------------------------
-    # RAG
-    # --------------------------------------------------------
-
-    result = ask_rag(
-        prompt
-    )
-
+    result = ask_rag(prompt)
 
     answer = result.get(
         "answer",
         "Non è stato possibile generare una risposta."
     )
-
-
-    # --------------------------------------------------------
-    # SALVA RISPOSTA
-    # --------------------------------------------------------
 
     create_message(
         conversation_id,
@@ -341,37 +307,24 @@ def process_message(
         answer
     )
 
-
     return result
 
 
-# ============================================================
+# =========================
 # CHAT PRINCIPALE
-# ============================================================
+# =========================
 
 def show_chat(user):
 
     initialize_chat_state()
 
-
     user_id = user.id
 
+    show_conversation_sidebar(user)
 
-    # ========================================================
-    # SIDEBAR
-    # ========================================================
-
-    show_conversation_sidebar(
-        user
+    conversation_id = (
+        st.session_state.conversation_id
     )
-
-
-    # ========================================================
-    # NESSUNA CONVERSAZIONE
-    # ========================================================
-
-    conversation_id = st.session_state.conversation_id
-
 
     if conversation_id is None:
 
@@ -380,55 +333,85 @@ def show_chat(user):
         )
 
         st.write(
-            "Benvenuto nell'assistente di diritto privato."
+            "Benvenuto nell'assistente "
+            "di diritto privato."
         )
 
         st.info(
-            "Crea una nuova conversazione per iniziare."
+            "Crea una nuova conversazione "
+            "per iniziare."
         )
 
         return
 
+    # Controllo accesso alla conversazione
 
-    # ========================================================
-    # TITOLO
-    # ========================================================
+    conversation = get_conversation(
+        conversation_id,
+        user_id
+    )
+
+    if conversation is None:
+
+        st.session_state.conversation_id = None
+
+        st.error(
+            "Conversazione non disponibile."
+        )
+
+        st.rerun()
+
+    # Titolo conversazione
+
+    st.subheader(
+        conversation.get(
+            "title",
+            "Conversazione"
+        )
+    )
+
+    # Messaggi
 
     messages = show_messages(
         conversation_id
     )
 
-
-    # ========================================================
-    # INPUT
-    # ========================================================
+    # Input
 
     prompt = st.chat_input(
         "Scrivi la tua domanda di diritto privato..."
     )
 
-
     if prompt:
 
         prompt = prompt.strip()
 
-
         if not prompt:
             return
 
+        # Una conversazione pubblica appartenente
+        # ad altro utente è in sola lettura.
 
-        # ----------------------------------------------------
-        # PRIMA DOMANDA
-        # ----------------------------------------------------
+        is_owner = (
+            conversation.get("user_id")
+            == user_id
+        )
+
+        if (
+            conversation.get("is_public", False)
+            and not is_owner
+        ):
+
+            st.warning(
+                "Questa è una conversazione pubblica "
+                "in sola lettura."
+            )
+
+            return
 
         is_first_message = (
             len(messages) == 0
         )
-
-
-        # ----------------------------------------------------
-        # GENERAZIONE
-        # ----------------------------------------------------
 
         with st.spinner(
             "Sto consultando le fonti giuridiche..."
@@ -438,11 +421,6 @@ def show_chat(user):
                 conversation_id,
                 prompt
             )
-
-
-        # ----------------------------------------------------
-        # TITOLO
-        # ----------------------------------------------------
 
         if is_first_message:
 
@@ -455,19 +433,11 @@ def show_chat(user):
                 title
             )
 
-
-        # ----------------------------------------------------
-        # MOSTRA FONTI
-        # ----------------------------------------------------
-
-        documents = result.get(
-            "documents",
-            []
-        )
-
         show_sources(
-            documents
+            result.get(
+                "documents",
+                []
+            )
         )
-
 
         st.rerun()
