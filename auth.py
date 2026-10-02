@@ -87,9 +87,7 @@ def load_user_session(user):
 # ============================================================
 
 def login(email, password):
-
     try:
-
         client = create_supabase_client()
 
         response = client.auth.sign_in_with_password({
@@ -100,17 +98,14 @@ def login(email, password):
         user = response.user
 
         if user is None:
-            return False, "Login non riuscito."
+            return False, "Supabase non ha restituito alcun utente."
 
         load_user_session(user)
 
         return True, "Login effettuato."
 
     except Exception as e:
-
         return False, f"{type(e).__name__}: {str(e)}"
-
-
 # ============================================================
 # REGISTRAZIONE
 # ============================================================
