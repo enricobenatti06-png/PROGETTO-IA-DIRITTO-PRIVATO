@@ -1,76 +1,59 @@
-import os
 import re
-from pathlib import Path
-from typing import List, Dict
 
 import numpy as np
 import streamlit as st
 
+from groq import Groq
 from huggingface_hub import list_repo_files, hf_hub_download
 from sentence_transformers import SentenceTransformer
-from openai import OpenAI
 
 
 # ============================================================
 # CONFIGURAZIONE
 # ============================================================
 
-HF_REPO = "enricobenatti06/manuale_galgano"
-
+HF_REPO_ID = "enricobenatti06/manuale_galgano"
 HF_REPO_TYPE = "dataset"
 
+# Modello utilizzato per trasformare i testi in vettori
+EMBEDDING_MODEL = (
+    "sentence-transformers/"
+    "paraphrase-multilingual-MiniLM-L12-v2"
+)
+
+# Modello LLM servito da Groq
+GROQ_MODEL = "openai/gpt-oss-120b"
+
+# Cartella principale del dataset
 HF_FOLDER = "Manuale Galgano"
 
-# Modello per gli embedding.
-# Multilingua: adatto anche ai testi italiani.
-EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-
-# Modello LLM.
-# Può essere modificato dai Secrets di Streamlit.
-DEFAULT_LLM_MODEL = "gpt-6-luna"
-
-# Numero massimo di documenti recuperati.
-DEFAULT_TOP_K = 5
-
-# Dimensione massima del chunk.
+# Dimensione dei blocchi di testo
 CHUNK_SIZE = 1800
 
-# Sovrapposizione tra chunk.
+# Sovrapposizione tra blocchi
 CHUNK_OVERLAP = 250
+
+# Numero massimo di documenti recuperati
+DEFAULT_TOP_K = 5
+
+# Soglia minima di similarità
+MINIMUM_SCORE = 0.25
 
 
 # ============================================================
-# OPENAI
+# CLIENT GROQ
 # ============================================================
 
 @st.cache_resource
-def get_openai_client():
+def get_groq_client():
 
-    api_key = st.secrets.get(
-        "OPENAI_API_KEY",
-        os.getenv("OPENAI_API_KEY")
-    )
-
-    if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY non configurata."
-        )
-
-    return OpenAI(
-        api_key=api_key
-    )
-
-
-def get_llm_model():
-
-    return st.secrets.get(
-        "OPENAI_MODEL",
-        DEFAULT_LLM_MODEL
+    return Groq(
+        api_key=st.secrets["GROQ_API_KEY"]
     )
 
 
 # ============================================================
-# EMBEDDING MODEL
+# MODELLO EMBEDDING
 # ============================================================
 
 @st.cache_resource
@@ -82,100 +65,6 @@ def get_embedding_model():
 
 
 # ============================================================
-# DOWNLOAD / LETTURA DATASET
-# ============================================================
-
-@st.cache_data(
-    ttl=3600,
-    show_spinner=False
-)
-def get_repository_files():
-
-    try:
-
-        files = list_repo_files(
-            repo_id=HF_REPO,
-            repo_type=HF_REPO_TYPE
-        )
-
-    except Exception as e:
-
-        raise RuntimeError(
-            f"Impossibile collegarsi al repository "
-            f"Hugging Face '{HF_REPO}': {e}"
-        )
-
-
-    # Manteniamo soltanto i file contenuti
-    # nella cartella del Manuale Galgano.
-
-    prefix = HF_FOLDER.rstrip("/") + "/"
-
-    relevant_files = []
-
-    for file in files:
-
-        if not file.startswith(prefix):
-            continue
-
-        extension = Path(file).suffix.lower()
-
-        if extension in {
-            ".txt",
-            ".md",
-            ".markdown"
-        }:
-
-            relevant_files.append(file)
-
-
-    return sorted(
-        relevant_files
-    )
-
-
-@st.cache_data(
-    ttl=3600,
-    show_spinner=False
-)
-def download_text_file(
-    file_path
-):
-
-    try:
-
-        local_path = hf_hub_download(
-            repo_id=HF_REPO,
-            filename=file_path,
-            repo_type=HF_REPO_TYPE
-        )
-
-    except Exception as e:
-
-        raise RuntimeError(
-            f"Errore durante il download di "
-            f"'{file_path}': {e}"
-        )
-
-
-    path = Path(local_path)
-
-
-    try:
-
-        return path.read_text(
-            encoding="utf-8"
-        )
-
-    except UnicodeDecodeError:
-
-        return path.read_text(
-            encoding="utf-8",
-            errors="replace"
-        )
-
-
-# ============================================================
 # PULIZIA TESTO
 # ============================================================
 
@@ -184,28 +73,17 @@ def clean_text(text):
     if not text:
         return ""
 
-    # Normalizza gli spazi.
+    text = text.replace("\r\n", "\n")
+    text = text.replace("\r", "\n")
 
-    text = text.replace(
-        "\r\n",
-        "\n"
-    )
-
-    text = text.replace(
-        "\r",
-        "\n"
-    )
-
-    # Elimina spazi multipli.
-
+    # Elimina spazi multipli
     text = re.sub(
         r"[ \t]+",
         " ",
         text
     )
 
-    # Elimina troppe righe vuote.
-
+    # Elimina troppe righe vuote
     text = re.sub(
         r"\n{3,}",
         "\n\n",
@@ -216,106 +94,133 @@ def clean_text(text):
 
 
 # ============================================================
+# LETTURA FILE HUGGING FACE
+# ============================================================
+
+@st.cache_data(show_spinner=False)
+def get_hf_files():
+
+    files = list_repo_files(
+        repo_id=HF_REPO_ID,
+        repo_type=HF_REPO_TYPE
+    )
+
+    allowed_extensions = (
+        ".txt",
+        ".md",
+        ".markdown"
+    )
+
+    selected_files = []
+
+    for file_path in files:
+
+        # Consideriamo soltanto i file della cartella
+        if not file_path.startswith(
+            HF_FOLDER + "/"
+        ):
+            continue
+
+        if not file_path.lower().endswith(
+            allowed_extensions
+        ):
+            continue
+
+        selected_files.append(
+            file_path
+        )
+
+    return sorted(
+        selected_files
+    )
+
+
+# ============================================================
+# DOWNLOAD FILE
+# ============================================================
+
+@st.cache_data(show_spinner=False)
+def download_hf_file(file_path):
+
+    local_path = hf_hub_download(
+        repo_id=HF_REPO_ID,
+        filename=file_path,
+        repo_type=HF_REPO_TYPE
+    )
+
+    with open(
+        local_path,
+        "r",
+        encoding="utf-8"
+    ) as file:
+
+        return file.read()
+
+
+# ============================================================
 # CHUNKING
 # ============================================================
 
-def split_text(
+def chunk_text(
     text,
     chunk_size=CHUNK_SIZE,
     overlap=CHUNK_OVERLAP
 ):
-    """
-    Divide il testo in blocchi mantenendo una
-    sovrapposizione tra i blocchi.
-
-    Il chunking cerca prima di tutto di interrompere
-    il testo in corrispondenza di paragrafi.
-    """
 
     text = clean_text(text)
 
     if not text:
         return []
 
-
-    paragraphs = re.split(
-        r"\n\s*\n",
-        text
-    )
-
-
     chunks = []
 
-    current = ""
+    start = 0
+    text_length = len(text)
 
+    while start < text_length:
 
-    for paragraph in paragraphs:
-
-        paragraph = paragraph.strip()
-
-        if not paragraph:
-            continue
-
-
-        # Se il paragrafo può essere aggiunto
-        # senza superare la dimensione prevista.
-
-        if len(current) + len(paragraph) + 2 <= chunk_size:
-
-            if current:
-
-                current += "\n\n" + paragraph
-
-            else:
-
-                current = paragraph
-
-            continue
-
-
-        # Salviamo il chunk precedente.
-
-        if current:
-
-            chunks.append(
-                current.strip()
-            )
-
-
-        # Se il singolo paragrafo è troppo grande,
-        # lo dividiamo ulteriormente.
-
-        if len(paragraph) > chunk_size:
-
-            start = 0
-
-            while start < len(paragraph):
-
-                end = start + chunk_size
-
-                piece = paragraph[start:end]
-
-                if piece.strip():
-
-                    chunks.append(
-                        piece.strip()
-                    )
-
-                start = end - overlap
-
-            current = ""
-
-        else:
-
-            current = paragraph
-
-
-    if current:
-
-        chunks.append(
-            current.strip()
+        end = min(
+            start + chunk_size,
+            text_length
         )
 
+        chunk = text[start:end]
+
+        # Se non siamo alla fine, cerchiamo di
+        # chiudere il chunk in corrispondenza
+        # di una frase o di uno spazio.
+        if end < text_length:
+
+            last_period = chunk.rfind(". ")
+            last_newline = chunk.rfind("\n")
+            last_space = chunk.rfind(" ")
+
+            cut_position = max(
+                last_period,
+                last_newline,
+                last_space
+            )
+
+            if cut_position > chunk_size * 0.60:
+
+                end = start + cut_position + 1
+
+                chunk = text[
+                    start:end
+                ]
+
+        chunk = chunk.strip()
+
+        if chunk:
+            chunks.append(chunk)
+
+        if end >= text_length:
+            break
+
+        start = max(
+            end - overlap,
+            start + 1
+        )
 
     return chunks
 
@@ -324,272 +229,158 @@ def split_text(
 # COSTRUZIONE CORPUS
 # ============================================================
 
-@st.cache_data(
-    ttl=3600,
-    show_spinner=False
-)
+@st.cache_data(show_spinner=False)
 def build_corpus():
 
-    files = get_repository_files()
+    files = get_hf_files()
 
     documents = []
-
 
     for file_path in files:
 
         try:
 
-            text = download_text_file(
+            raw_text = download_hf_file(
                 file_path
             )
 
         except Exception:
-
             continue
 
-
-        text = clean_text(
-            text
+        cleaned = clean_text(
+            raw_text
         )
 
-
-        # Ignoriamo i file vuoti.
-
-        if not text:
+        if not cleaned:
             continue
 
-
-        chunks = split_text(
-            text
+        chunks = chunk_text(
+            cleaned
         )
-
 
         for index, chunk in enumerate(
             chunks
         ):
 
-            documents.append({
-
-                "text": chunk,
-
-                "source": file_path,
-
-                "chunk_id": index,
-
-                "title": Path(
-                    file_path
-                ).stem,
-
-                "path": file_path
-
-            })
-
+            documents.append(
+                {
+                    "text": chunk,
+                    "source": file_path,
+                    "chunk_index": index
+                }
+            )
 
     return documents
 
 
 # ============================================================
-# EMBEDDING CORPUS
+# EMBEDDING DEL CORPUS
 # ============================================================
 
-@st.cache_data(
-    ttl=3600,
-    show_spinner=False
-)
-def build_embeddings(
-    texts
-):
-
-    model = get_embedding_model()
-
-
-    embeddings = model.encode(
-        texts,
-        normalize_embeddings=True,
-        show_progress_bar=False
-    )
-
-
-    return np.asarray(
-        embeddings,
-        dtype=np.float32
-    )
-
-
-# ============================================================
-# CARICAMENTO INDICE
-# ============================================================
-
-@st.cache_resource
-def get_rag_index():
+@st.cache_resource(show_spinner=True)
+def build_embeddings():
 
     documents = build_corpus()
 
-
     if not documents:
-
-        raise RuntimeError(
-            "Il repository Hugging Face non contiene "
-            "testi utilizzabili."
+        raise Exception(
+            "Nessun documento trovato "
+            "nel dataset Hugging Face."
         )
 
+    model = get_embedding_model()
 
     texts = [
         document["text"]
         for document in documents
     ]
 
-
-    embeddings = build_embeddings(
-        texts
+    embeddings = model.encode(
+        texts,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=True
     )
-
 
     return documents, embeddings
-
-
-# ============================================================
-# EMBEDDING DELLA QUERY
-# ============================================================
-
-def embed_query(
-    query
-):
-
-    model = get_embedding_model()
-
-
-    embedding = model.encode(
-        [query],
-        normalize_embeddings=True,
-        show_progress_bar=False
-    )
-
-
-    return np.asarray(
-        embedding[0],
-        dtype=np.float32
-    )
 
 
 # ============================================================
 # RICERCA SEMANTICA
 # ============================================================
 
-def search_documents(
-    query: str,
-    top_k: int = DEFAULT_TOP_K
-) -> List[Dict]:
+def retrieve_documents(
+    question,
+    top_k=DEFAULT_TOP_K,
+    minimum_score=MINIMUM_SCORE
+):
 
-    documents, embeddings = get_rag_index()
-
-
-    if not documents:
-
-        return []
-
-
-    query_embedding = embed_query(
-        query
+    documents, embeddings = (
+        build_embeddings()
     )
 
+    model = get_embedding_model()
 
-    # Poiché gli embedding sono normalizzati,
-    # il prodotto scalare equivale alla cosine similarity.
+    question_embedding = model.encode(
+        [question],
+        convert_to_numpy=True,
+        normalize_embeddings=True
+    )[0]
 
-    scores = embeddings @ query_embedding
-
-
-    # Ordina dal documento più pertinente
-    # al meno pertinente.
+    # Con embedding normalizzati,
+    # il prodotto scalare equivale
+    # alla cosine similarity.
+    scores = np.dot(
+        embeddings,
+        question_embedding
+    )
 
     ranked_indices = np.argsort(
         scores
     )[::-1]
 
-
     results = []
 
+    for index in ranked_indices:
 
-    for index in ranked_indices[:top_k]:
+        score = float(
+            scores[index]
+        )
+
+        if score < minimum_score:
+            continue
 
         document = dict(
             documents[index]
         )
 
-
-        document["score"] = float(
-            scores[index]
-        )
-
+        document["score"] = score
 
         results.append(
             document
         )
 
+        if len(results) >= top_k:
+            break
 
     return results
 
 
 # ============================================================
-# FILTRO DI RILEVANZA
+# COSTRUZIONE DEL CONTESTO
 # ============================================================
 
-def filter_relevant_documents(
-    documents,
-    minimum_score=0.25
-):
-
-    relevant = []
-
-    for document in documents:
-
-        score = document.get(
-            "score",
-            0
-        )
-
-
-        if score >= minimum_score:
-
-            relevant.append(
-                document
-            )
-
-
-    # Se la soglia è troppo severa,
-    # manteniamo almeno il primo risultato.
-
-    if not relevant and documents:
-
-        relevant = [
-            documents[0]
-        ]
-
-
-    return relevant
-
-
-# ============================================================
-# COSTRUZIONE CONTESTO
-# ============================================================
-
-def build_context(
-    documents
-):
+def build_context(documents):
 
     if not documents:
-
         return (
-            "Nessun documento pertinente "
-            "è stato recuperato dal Manuale Galgano."
+            "Nessun passaggio rilevante "
+            "è stato recuperato dal corpus."
         )
-
 
     context_parts = []
 
-
-    for number, document in enumerate(
+    for index, document in enumerate(
         documents,
         start=1
     ):
@@ -605,33 +396,21 @@ def build_context(
         )
 
         score = document.get(
-            "score"
+            "score",
+            0
         )
-
-
-        if score is not None:
-
-            score_text = (
-                f"Pertinenza: {score:.3f}"
-            )
-
-        else:
-
-            score_text = ""
-
 
         context_parts.append(
             f"""
-[FONTE {number}]
-Percorso: {source}
-{score_text}
+[FONTE {index}]
+File: {source}
+Rilevanza: {score:.3f}
 
 {text}
-""".strip()
+"""
         )
 
-
-    return "\n\n====================\n\n".join(
+    return "\n".join(
         context_parts
     )
 
@@ -640,220 +419,169 @@ Percorso: {source}
 # PROMPT GIURIDICO
 # ============================================================
 
-def build_prompt(
+SYSTEM_PROMPT = """
+Sei un assistente universitario specializzato
+in diritto privato italiano.
+
+Il tuo compito è assistere nello studio del diritto
+privato attraverso le fonti e i materiali messi a
+disposizione dal sistema.
+
+REGOLE FONDAMENTALI:
+
+1. Utilizza prioritariamente il contesto giuridico
+   fornito dal sistema.
+
+2. Non inventare articoli del Codice civile,
+   sentenze, orientamenti giurisprudenziali,
+   definizioni dottrinali o riferimenti bibliografici.
+
+3. Se il contesto non contiene informazioni
+   sufficienti per rispondere con sicurezza,
+   dichiaralo espressamente.
+
+4. Non presentare come certa un'informazione
+   che non è supportata dal contesto.
+
+5. Utilizza una terminologia giuridica italiana
+   precisa.
+
+6. Quando il contesto contiene riferimenti
+   normativi, riportali correttamente.
+
+7. Distingui, quando possibile, tra:
+   - disposizione normativa;
+   - istituto giuridico;
+   - interpretazione;
+   - dottrina;
+   - giurisprudenza.
+
+8. La risposta deve privilegiare il ragionamento
+   giuridico e i rapporti tra gli istituti, non
+   una semplice riproduzione meccanica del testo.
+
+9. Non attribuire al Manuale Galgano contenuti
+   che non risultano dal contesto recuperato.
+
+10. Se la domanda è ambigua, esplicita
+    l'interpretazione utilizzata.
+
+STRUTTURA DELLA RISPOSTA:
+
+Quando opportuno:
+- individua l'istituto;
+- indica le norme rilevanti;
+- spiega il funzionamento;
+- evidenzia presupposti, effetti e limiti;
+- collega gli istituti tra loro.
+
+L'obiettivo è fornire una risposta utile
+allo studio universitario del diritto privato.
+"""
+
+
+# ============================================================
+# GENERAZIONE RISPOSTA CON GROQ
+# ============================================================
+
+def generate_answer(
     question,
     context
 ):
 
-    return f"""
-Sei un assistente di diritto privato destinato allo studio
-universitario.
+    client = get_groq_client()
 
-Il tuo compito è rispondere alla domanda dell'utente
-utilizzando il materiale giuridico recuperato dal
-Manuale Galgano.
-
-PRINCIPI DA RISPETTARE:
-
-1. Non inventare norme, articoli, sentenze o citazioni.
-
-2. Non attribuire al Manuale Galgano affermazioni che
-   non risultano dal contesto fornito.
-
-3. Quando richiesto o pertinente, indica gli articoli
-   del Codice civile.
-
-4. Distingui la disposizione normativa dalla sua
-   interpretazione dottrinale.
-
-5. Se il materiale recuperato non è sufficiente,
-   dichiaralo espressamente.
-
-6. Non trattare il materiale recuperato come se fosse
-   automaticamente una fonte normativa.
-
-7. Rispondi in italiano.
-
-8. Usa terminologia giuridica precisa.
-
-9. Per domande universitarie privilegia una spiegazione
-   ragionata e strutturata, non una semplice definizione.
-
-10. Non aggiungere informazioni non necessarie soltanto
-    per rendere la risposta più lunga.
-
-MATERIALE RECUPERATO DAL DATABASE:
+    user_prompt = f"""
+CONTESTO GIURIDICO RECUPERATO
+================================
 
 {context}
 
-DOMANDA DELL'UTENTE:
+
+DOMANDA DELL'UTENTE
+================================
 
 {question}
 
-Fornisci una risposta giuridicamente precisa,
-chiara e strutturata.
-""".strip()
+
+ISTRUZIONE
+
+Rispondi alla domanda utilizzando
+il contesto giuridico recuperato.
+
+Se il contesto non è sufficiente,
+indicalo chiaramente invece di inventare
+informazioni.
+"""
+
+    response = client.chat.completions.create(
+
+        model=GROQ_MODEL,
+
+        messages=[
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT
+            },
+            {
+                "role": "user",
+                "content": user_prompt
+            }
+        ],
+
+        temperature=0.2,
+
+        max_tokens=4000
+    )
+
+    return (
+        response
+        .choices[0]
+        .message
+        .content
+    )
 
 
 # ============================================================
-# GENERAZIONE LLM
-# ============================================================
-
-def generate_with_llm(
-    prompt
-):
-
-    client = get_openai_client()
-
-    model = get_llm_model()
-
-
-    try:
-
-        response = client.responses.create(
-
-            model=model,
-
-            instructions=(
-                "Sei un assistente universitario "
-                "specializzato in diritto privato italiano."
-            ),
-
-            input=prompt
-
-        )
-
-
-        answer = response.output_text
-
-
-        if not answer:
-
-            raise RuntimeError(
-                "Il modello non ha restituito testo."
-            )
-
-
-        return answer.strip()
-
-
-    except Exception as e:
-
-        raise RuntimeError(
-            f"Errore durante la generazione della risposta: {e}"
-        )
-
-
-# ============================================================
-# FUNZIONE PRINCIPALE
+# FUNZIONE PRINCIPALE DEL RAG
 # ============================================================
 
 def answer_question(
-    question: str,
-    top_k: int = DEFAULT_TOP_K
-) -> Dict:
+    question,
+    top_k=DEFAULT_TOP_K
+):
 
     question = question.strip()
-
 
     if not question:
 
         return {
-            "answer": "Inserisci una domanda.",
+            "answer": (
+                "Inserisci una domanda."
+            ),
             "documents": [],
             "context": ""
         }
 
-
-    # --------------------------------------------------------
-    # 1. RICERCA
-    # --------------------------------------------------------
-
-    documents = search_documents(
+    # 1. Recupero semantico
+    documents = retrieve_documents(
         question,
         top_k=top_k
     )
 
-
-    # --------------------------------------------------------
-    # 2. FILTRO
-    # --------------------------------------------------------
-
-    documents = filter_relevant_documents(
-        documents
-    )
-
-
-    # --------------------------------------------------------
-    # 3. CONTESTO
-    # --------------------------------------------------------
-
+    # 2. Costruzione contesto
     context = build_context(
         documents
     )
 
-
-    # --------------------------------------------------------
-    # 4. PROMPT
-    # --------------------------------------------------------
-
-    prompt = build_prompt(
+    # 3. Generazione risposta
+    answer = generate_answer(
         question,
         context
     )
 
-
-    # --------------------------------------------------------
-    # 5. LLM
-    # --------------------------------------------------------
-
-    answer = generate_with_llm(
-        prompt
-    )
-
-
-    # --------------------------------------------------------
-    # 6. RISULTATO
-    # --------------------------------------------------------
-
     return {
-
         "answer": answer,
-
         "documents": documents,
-
         "context": context
-
-    }
-
-
-# ============================================================
-# INFORMAZIONI SUL DATABASE
-# ============================================================
-
-def get_database_info():
-
-    documents, embeddings = get_rag_index()
-
-
-    sources = set(
-        document["source"]
-        for document in documents
-    )
-
-
-    return {
-
-        "repository": HF_REPO,
-
-        "folder": HF_FOLDER,
-
-        "documents": len(documents),
-
-        "sources": len(sources),
-
-        "embedding_model": EMBEDDING_MODEL,
-
-        "llm_model": get_llm_model()
-
     }
