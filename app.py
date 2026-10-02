@@ -1,75 +1,115 @@
 import streamlit as st
-from supabase import create_client
+
+from auth import (
+    is_logged_in,
+    get_current_user,
+    show_auth_page,
+    show_user_sidebar,
+    load_user_session,
+    supabase
+)
+
 
 st.set_page_config(
-    page_title="Test registrazione",
-    page_icon="⚖️"
+    page_title="Assistente di Diritto Privato",
+    page_icon="⚖️",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-st.title("⚖️ Test registrazione")
 
-# ============================================================
-# CLIENT SUPABASE
-# ============================================================
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+        padding-left: 3rem;
+        padding-right: 3rem;
+    }
 
-url = st.secrets["SUPABASE_URL"].strip()
-key = st.secrets["SUPABASE_KEY"].strip()
+    [data-testid="stChatMessage"] {
+        padding-top: 0.5rem;
+        padding-bottom: 0.5rem;
+    }
 
-st.caption("Project URL utilizzato:")
-st.code(url)
+    section[data-testid="stSidebar"] {
+        padding-top: 1rem;
+    }
 
-supabase = create_client(url, key)
-
-st.success("✅ Client Supabase creato")
-
-
-# ============================================================
-# REGISTRAZIONE
-# ============================================================
-
-st.divider()
-
-email = st.text_input(
-    "Email",
-    placeholder="nuova-email@example.com"
+    h1 {
+        margin-bottom: 0.5rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
-password = st.text_input(
-    "Password",
-    type="password"
-)
 
-if st.button(
-    "Crea account",
-    use_container_width=True
-):
-
-    if not email or not password:
-        st.error("Inserisci email e password.")
-        st.stop()
+def restore_session():
+    if is_logged_in():
+        return True
 
     try:
+        session_response = supabase.auth.get_session()
 
-        response = supabase.auth.sign_up(
-            {
-                "email": email.strip(),
-                "password": password
-            }
-        )
+        if session_response is None:
+            return False
 
-        st.success("✅ REGISTRAZIONE RIUSCITA")
+        session = session_response
 
-        st.write(response)
+        if hasattr(session_response, "session"):
+            session = session_response.session
 
-    except Exception as e:
+        if session is None:
+            return False
 
-        st.error("❌ ERRORE")
+        user = getattr(session, "user", None)
 
-        st.write("Tipo errore:")
-        st.code(type(e).__name__)
+        if user is None:
+            return False
 
-        st.write("Messaggio:")
-        st.code(str(e))
+        load_user_session(user)
 
-        st.write("URL utilizzato:")
-        st.code(url)
+        return True
+
+    except Exception:
+        return False
+
+
+# =========================
+# AUTENTICAZIONE
+# =========================
+
+logged_in = restore_session()
+
+
+if not logged_in:
+    show_auth_page()
+    st.stop()
+
+
+# =========================
+# UTENTE AUTENTICATO
+# =========================
+
+user = get_current_user()
+
+show_user_sidebar()
+
+
+# =========================
+# CHAT
+# =========================
+
+from chat import show_chat
+
+
+st.title("⚖️ Assistente di Diritto Privato")
+
+st.caption(
+    "Assistente giuridico basato su fonti normative, "
+    "dottrina, giurisprudenza e materiale didattico."
+)
+
+show_chat(user)
