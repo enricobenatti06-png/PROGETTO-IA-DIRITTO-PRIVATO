@@ -2,12 +2,7 @@ import streamlit as st
 from supabase import create_client
 
 
-# ============================================================
-# SUPABASE
-# ============================================================
-
 def create_supabase_client():
-
     url = st.secrets["SUPABASE_URL"].strip()
     key = st.secrets["SUPABASE_KEY"].strip()
 
@@ -17,22 +12,19 @@ def create_supabase_client():
 supabase = create_supabase_client()
 
 
-# ============================================================
+# =========================
 # SESSIONE
-# ============================================================
+# =========================
 
 def get_current_user():
-
     return st.session_state.get("user")
 
 
 def get_current_role():
-
-    return st.session_state.get("role")
+    return st.session_state.get("role", "user")
 
 
 def is_logged_in():
-
     return (
         "user" in st.session_state
         and st.session_state.user is not None
@@ -40,7 +32,6 @@ def is_logged_in():
 
 
 def logout():
-
     try:
         supabase.auth.sign_out()
     except Exception:
@@ -50,30 +41,33 @@ def logout():
     st.rerun()
 
 
-# ============================================================
-# RECUPERO PROFILO
-# ============================================================
+# =========================
+# PROFILO
+# =========================
 
 def get_profile(user_id):
-
     response = (
         supabase
         .table("profiles")
         .select("*")
         .eq("id", user_id)
-        .single()
         .execute()
     )
 
-    return response.data
+    if not response.data:
+        return None
+
+    return response.data[0]
 
 
 def load_user_session(user):
-
     profile = get_profile(user.id)
 
     if profile is None:
-        profile = {"role": "user"}
+        profile = {
+            "id": user.id,
+            "role": "user"
+        }
 
     st.session_state.user = user
     st.session_state.profile = profile
@@ -82,9 +76,9 @@ def load_user_session(user):
     return profile
 
 
-# ============================================================
+# =========================
 # LOGIN
-# ============================================================
+# =========================
 
 def login(email, password):
     try:
@@ -95,10 +89,13 @@ def login(email, password):
             "password": password
         })
 
-        user = response.user
+        if response.user is None:
+            return False, (
+                "Supabase non ha restituito un utente. "
+                "Controlla che l'email sia confermata."
+            )
 
-        if user is None:
-            return False, "Supabase non ha restituito alcun utente."
+        user = response.user
 
         load_user_session(user)
 
@@ -106,27 +103,22 @@ def login(email, password):
 
     except Exception as e:
         return False, f"{type(e).__name__}: {str(e)}"
-# ============================================================
+
+
+# =========================
 # REGISTRAZIONE
-# ============================================================
+# =========================
 
 def register(email, password):
-
     try:
-
-        # Creiamo un client NUOVO ad ogni registrazione.
         client = create_supabase_client()
 
-        clean_email = email.strip()
-
         response = client.auth.sign_up({
-            "email": clean_email,
+            "email": email.strip(),
             "password": password
         })
 
-        user = response.user
-
-        if user is None:
+        if response.user is None:
             return False, "Supabase non ha restituito un utente."
 
         return True, (
@@ -135,13 +127,12 @@ def register(email, password):
         )
 
     except Exception as e:
-
         return False, f"{type(e).__name__}: {str(e)}"
 
 
-# ============================================================
-# INTERFACCIA LOGIN
-# ============================================================
+# =========================
+# PAGINA AUTENTICAZIONE
+# =========================
 
 def show_auth_page():
 
@@ -158,9 +149,9 @@ def show_auth_page():
     ])
 
 
-    # ========================================================
+    # =========================
     # LOGIN
-    # ========================================================
+    # =========================
 
     with login_tab:
 
@@ -185,7 +176,9 @@ def show_auth_page():
 
             if not email or not password:
 
-                st.error("Inserisci email e password.")
+                st.error(
+                    "Inserisci email e password."
+                )
 
             else:
 
@@ -197,6 +190,7 @@ def show_auth_page():
                 if success:
 
                     st.success(message)
+
                     st.rerun()
 
                 else:
@@ -204,9 +198,9 @@ def show_auth_page():
                     st.error(message)
 
 
-    # ========================================================
+    # =========================
     # REGISTRAZIONE
-    # ========================================================
+    # =========================
 
     with register_tab:
 
@@ -214,7 +208,8 @@ def show_auth_page():
 
             email = st.text_input(
                 "Email",
-                key="register_email"
+                key="register_email",
+                placeholder="nome@email.com"
             )
 
             password = st.text_input(
@@ -237,11 +232,15 @@ def show_auth_page():
 
             if not email or not password:
 
-                st.error("Compila tutti i campi.")
+                st.error(
+                    "Compila tutti i campi."
+                )
 
             elif password != password_confirm:
 
-                st.error("Le password non coincidono.")
+                st.error(
+                    "Le password non coincidono."
+                )
 
             elif len(password) < 6:
 
@@ -265,9 +264,9 @@ def show_auth_page():
                     st.error(message)
 
 
-# ============================================================
+# =========================
 # SIDEBAR UTENTE
-# ============================================================
+# =========================
 
 def show_user_sidebar():
 
